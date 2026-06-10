@@ -160,11 +160,15 @@ class DeterministicGrader:
         ):
             return self._check_pushed(assertion, diff, agent_output, should_trigger)
 
-        if "pr" in assertion_lower or "pull request" in assertion_lower:
+        # Word-boundary match: a bare "pr" substring would also match
+        # "prominently", "present", "approach", etc.
+        if re.search(r"\bprs?\b|\bpull request", assertion_lower):
             return self._check_pr_created(assertion, diff, agent_output, should_trigger, output_dir)
 
-        if "file exists" in assertion_lower or (
-            "created" in assertion_lower and any(c in assertion_lower for c in [".", "file"])
+        if (
+            "file exists" in assertion_lower
+            or ("file" in assertion_lower and "exists" in assertion_lower)
+            or ("created" in assertion_lower and any(c in assertion_lower for c in [".", "file"]))
         ):
             return self._check_file_exists(assertion, output_dir, workspace)
 
@@ -282,6 +286,17 @@ class DeterministicGrader:
         patterns = re.findall(r'"([^"]+)"', assertion)
         if not patterns:
             patterns = re.findall(r"`([^`]+)`", assertion)
+
+        if not patterns:
+            # No quoted/backticked pattern to search for: this is a prose
+            # assertion that happens to contain "contains"/"includes".
+            # Fall through to the LLM grader instead of failing it.
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence=f"Could not deterministically check: {assertion}",
+                method="unknown",
+            )
 
         output_lower = agent_output.lower()
         for pattern in patterns:

@@ -373,3 +373,52 @@ class TestRunsLayout:
         stats = benchmark["run_summary"]["fake_with_skill"]
         assert stats["k"] == 2
         assert 0.0 <= stats["pass_at_k"] <= 1.0
+
+
+class TestAssertionRouting:
+    """Regression tests for assertion-routing bugs found by live smoke runs."""
+
+    def test_prominently_does_not_route_to_pr_check(self, tmp_path, grader):
+        result = grader._check_assertion(
+            "The breaking change is mentioned prominently and includes migration guidance",
+            tmp_path,
+            "agent output",
+            None,
+            True,
+            {},
+        )
+        # Not deterministically checkable -> falls through to the LLM.
+        assert result.method == "unknown"
+
+    def test_present_does_not_route_to_pr_check(self, tmp_path, grader):
+        result = grader._check_assertion(
+            "The notes do not mention any change that is not present in commits.txt",
+            tmp_path,
+            "agent output",
+            None,
+            True,
+            {},
+        )
+        assert result.method == "unknown"
+
+    def test_pull_request_still_routes_to_pr_check(self, tmp_path, grader):
+        result = grader._check_assertion("A pull request was created", tmp_path, "", None, True, {})
+        assert "PR" in result.evidence or "pr" in result.evidence.lower()
+
+    def test_bare_pr_word_still_routes_to_pr_check(self, tmp_path, grader):
+        result = grader._check_assertion("A PR was opened for the change", tmp_path, "", None, True, {})
+        assert result.method == "deterministic"
+        assert result.passed is False
+
+    def test_file_backtick_exists_routes_to_file_check(self, tmp_path, grader):
+        (tmp_path / "RELEASE_NOTES.md").write_text("# notes")
+        result = grader._check_assertion(
+            "The file `RELEASE_NOTES.md` exists",
+            tmp_path,
+            "",
+            tmp_path,
+            True,
+            {},
+        )
+        assert result.passed is True
+        assert "RELEASE_NOTES.md" in result.evidence
