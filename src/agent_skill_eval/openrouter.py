@@ -13,17 +13,21 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import urllib.request
 from typing import Optional
 
+from agent_skill_eval import __version__
 from agent_skill_eval.models import TimingData
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _FETCH_TIMEOUT_SECONDS = 10
 
 # model id -> pricing dict, populated once per process. The models endpoint
-# is public (no API key) but we still never want it on a hot path.
+# is public (no API key) but we still never want it on a hot path. The lock
+# keeps concurrent eval threads from firing redundant fetches.
 _pricing_cache: Optional[dict[str, dict]] = None
+_pricing_lock = threading.Lock()
 
 
 def fetch_openrouter_pricing() -> dict[str, dict]:
@@ -36,16 +40,28 @@ def fetch_openrouter_pricing() -> dict[str, dict]:
     if _pricing_cache is not None:
         return _pricing_cache
 
-    with urllib.request.urlopen(OPENROUTER_MODELS_URL, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    with _pricing_lock:
+        if _pricing_cache is not None:
+            return _pricing_cache
 
-    pricing: dict[str, dict] = {}
-    for model in data.get("data", []):
-        model_id = model.get("id")
-        if model_id and isinstance(model.get("pricing"), dict):
-            pricing[model_id] = model["pricing"]
-    _pricing_cache = pricing
-    return pricing
+        # CDN-fronted APIs commonly reject urllib's default User-Agent.
+        req = urllib.request.Request(
+            OPENROUTER_MODELS_URL,
+            headers={"User-Agent": f"agent-skill-eval/{__version__}"},
+        )
+        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        pricing: dict[str, dict] = {}
+        models = data.get("data", []) if isinstance(data, dict) else []
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_id = model.get("id")
+            if model_id and isinstance(model.get("pricing"), dict):
+                pricing[model_id] = model["pricing"]
+        _pricing_cache = pricing
+        return pricing
 
 
 def openrouter_slug_candidates(model: str) -> list[str]:
