@@ -299,6 +299,9 @@ def _load_pricing_config(path: Optional[Path]) -> dict[str, dict]:
     if not path.exists():
         console.print(f"[red]Pricing config not found: {path}[/red]")
         raise typer.Exit(1)
+    if not path.is_file():
+        console.print(f"[red]Pricing config {path} is not a file[/red]")
+        raise typer.Exit(1)
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as e:
@@ -862,17 +865,19 @@ def status(
         console.print("[yellow]No summary.json (run predates it); rebuilt a reduced summary from artifacts.[/yellow]")
 
     console.print(f"\n[bold]{iter_dir}[/bold]")
+    # `or`-defaults everywhere below: summary.json fields can be
+    # present-but-null (hand-edited or partially written files).
     console.print(
         f"skill={summary.get('skill_name')} iteration={summary.get('iteration')} "
-        f"agents={','.join(summary.get('agents', []))} "
-        f"eval_ids={','.join(str(e) for e in summary.get('eval_ids', []))}"
+        f"agents={','.join(summary.get('agents') or [])} "
+        f"eval_ids={','.join(str(e) for e in summary.get('eval_ids') or [])}"
     )
     console.print(
-        f"runs: {summary.get('runs_completed', 0)} completed, "
-        f"{summary.get('runs_failed_grading', 0)} with failed assertions, "
-        f"{len(summary.get('errors', []))} errored, "
-        f"{len(summary.get('skipped_runs', []))} skipped; "
-        f"duration {summary.get('duration_seconds', 0):.0f}s"
+        f"runs: {summary.get('runs_completed') or 0} completed, "
+        f"{summary.get('runs_failed_grading') or 0} with failed assertions, "
+        f"{len(summary.get('errors') or [])} errored, "
+        f"{len(summary.get('skipped_runs') or [])} skipped; "
+        f"duration {summary.get('duration_seconds') or 0:.0f}s"
     )
 
     pass_rates = summary.get("pass_rates") or {}
@@ -899,19 +904,19 @@ def status(
     cost_str = f"{total_cost:.4f} USD" if total_cost is not None else "unavailable"
     console.print(f"cost: {cost_str} ({cost.get('runs_with_cost', 0)}/{cost.get('runs_total', 0)} runs reported cost)")
 
-    for failed in summary.get("failed_runs", []):
+    for failed in summary.get("failed_runs") or []:
         config = "with_skill" if failed.get("with_skill") else "without_skill"
         console.print(
             f"  [red]FAILED {failed.get('eval_id')}/{failed.get('agent')}/{config}: "
-            f"{', '.join(failed.get('failed_assertions', [])) or 'see grading.json'}[/red]"
+            f"{', '.join(failed.get('failed_assertions') or []) or 'see grading.json'}[/red]"
         )
-    for skipped in summary.get("skipped_runs", []):
+    for skipped in summary.get("skipped_runs") or []:
         console.print(f"  [yellow]SKIPPED {skipped.get('run')}: {skipped.get('reason')}[/yellow]")
-    for error in summary.get("errors", []):
+    for error in summary.get("errors") or []:
         console.print(f"  [red]ERROR {error.get('run')}: {error.get('error')}[/red]")
 
     budget = summary.get("budget") or {}
-    for exceeded in budget.get("exceeded_runs", []):
+    for exceeded in budget.get("exceeded_runs") or []:
         config = "with_skill" if exceeded.get("with_skill") else "without_skill"
         console.print(
             f"  [yellow]BUDGET {exceeded.get('eval_id')}/{exceeded.get('agent')}/{config}: "
@@ -919,8 +924,8 @@ def status(
         )
 
     cleanup_info = summary.get("cleanup") or {}
-    branches = cleanup_info.get("remote_branches", [])
-    prs = cleanup_info.get("pr_numbers", [])
+    branches = cleanup_info.get("remote_branches") or []
+    prs = cleanup_info.get("pr_numbers") or []
     if branches or prs:
         console.print(
             f"[yellow]side effects recorded: {len(branches)} remote branch(es), {len(prs)} PR(s) — "

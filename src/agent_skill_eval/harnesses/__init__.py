@@ -171,6 +171,7 @@ class AgentHarness(ABC):
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
+                    errors="replace",
                     timeout=self.timeout,
                     env=env,
                 )
@@ -181,8 +182,16 @@ class AgentHarness(ABC):
                 if result.returncode == 0:
                     break
             except subprocess.TimeoutExpired as e:
-                stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-                stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+                stdout = (
+                    (e.stdout or b"").decode("utf-8", errors="replace")
+                    if isinstance(e.stdout, bytes)
+                    else (e.stdout or "")
+                )
+                stderr = (
+                    (e.stderr or b"").decode("utf-8", errors="replace")
+                    if isinstance(e.stderr, bytes)
+                    else (e.stderr or "")
+                )
                 stderr += f"\n[agent-skill-eval] timed out after {self.timeout}s (attempt {attempt + 1}/{attempts})"
                 exit_code = None
                 timed_out = True
@@ -497,7 +506,9 @@ def get_cli_version(agent_type: AgentType) -> Optional[str]:
     if not command:
         return None
     try:
-        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", timeout=15, check=False)
+        result = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, check=False
+        )
     except (subprocess.SubprocessError, OSError):
         return None
     if result.returncode != 0:

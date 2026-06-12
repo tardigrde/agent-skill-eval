@@ -36,10 +36,11 @@ def leaf_config_dirs(agent_dir: Path) -> list[Path]:
 
 
 def _token_totals(timings: list[dict]) -> dict:
-    input_tokens = sum(t.get("input_tokens", 0) for t in timings)
-    cached = sum(t.get("cached_tokens", 0) for t in timings)
-    output = sum(t.get("output_tokens", 0) for t in timings)
-    total = sum(t.get("total_tokens", 0) for t in timings)
+    # `or 0` (not a .get default): timing.json fields can be present-but-null.
+    input_tokens = sum(t.get("input_tokens") or 0 for t in timings)
+    cached = sum(t.get("cached_tokens") or 0 for t in timings)
+    output = sum(t.get("output_tokens") or 0 for t in timings)
+    total = sum(t.get("total_tokens") or 0 for t in timings)
     reported_input = max(input_tokens, cached)
     # Prefer the per-run value the harness recorded (it knows whether its
     # CLI's input_tokens include cache reads); fall back to the
@@ -48,7 +49,7 @@ def _token_totals(timings: list[dict]) -> dict:
     for t in timings:
         nc = t.get("non_cached_input_tokens")
         if nc is None:
-            nc = max(t.get("input_tokens", 0) - t.get("cached_tokens", 0), 0)
+            nc = max((t.get("input_tokens") or 0) - (t.get("cached_tokens") or 0), 0)
         non_cached += nc
     # None when no run reported reasoning telemetry: unknown, not zero.
     reasoning_known = [r for t in timings if (r := t.get("reasoning_output_tokens")) is not None]

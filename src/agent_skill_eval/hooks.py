@@ -53,6 +53,7 @@ def run_hook_command(command: str, env_extra: dict[str, str]) -> dict:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
         )
@@ -64,8 +65,8 @@ def run_hook_command(command: str, env_extra: dict[str, str]) -> dict:
             "timed_out": False,
         }
     except subprocess.TimeoutExpired as e:
-        stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        stderr = (e.stderr or b"").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stdout = (e.stdout or b"").decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = (e.stderr or b"").decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
         return {
             "command": command,
             "exit_code": None,
