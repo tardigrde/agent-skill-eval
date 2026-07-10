@@ -204,12 +204,40 @@ class TestCleanupScope:
         with patch("subprocess.run", side_effect=fake_run):
             _cleanup_manifest(manifest, source_repo=manifest.source_repo)
 
-        deleted_branches = [c for c in calls if "DELETE" in c]
-        closed_prs = [c for c in calls if "pr" in c and "close" in c]
-        assert any("feature/eval-1" in c[-1] for c in deleted_branches)
-        assert any("123" in c for c in closed_prs)
+        assert ["gh", "pr", "close", "123", "--repo", "foo/bar"] in calls
+        assert ["git", "push", "https://github.com/foo/bar.git", "--delete", "feature/eval-1"] in calls
         # Must NOT call "pr list" with --state open (the old broad cleanup)
         assert not any("pr" in c and "list" in c and "open" in c for c in calls)
+
+    def test_cleanup_manifest_closes_gitlab_mrs_and_deletes_branch(self, tmp_path):
+        from agent_skill_eval.cli import _cleanup_manifest
+        from agent_skill_eval.models import CleanupManifest
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(cmd)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        manifest = CleanupManifest(
+            source_repo="git@gitlab.example.com:acme/platform/plugins/skill-eval-fixtures.git",
+            source_repo_provider="gitlab",
+            source_repo_project="acme/platform/plugins/skill-eval-fixtures",
+            remote_branches=["feature/eval-1"],
+            merge_request_numbers=[42],
+        )
+
+        with patch("subprocess.run", side_effect=fake_run):
+            _cleanup_manifest(manifest, source_repo=manifest.source_repo)
+
+        assert ["glab", "mr", "close", "42", "-R", "acme/platform/plugins/skill-eval-fixtures"] in calls
+        assert [
+            "git",
+            "push",
+            "git@gitlab.example.com:acme/platform/plugins/skill-eval-fixtures.git",
+            "--delete",
+            "feature/eval-1",
+        ] in calls
 
     def test_cleanup_manifest_without_source_repo_is_safe(self, tmp_path):
         from agent_skill_eval.cli import _cleanup_manifest
@@ -277,7 +305,7 @@ class TestCleanupScope:
 
 class TestBuildCleanupEntryPrNumbers:
     @staticmethod
-    def _runner(tmp_path):
+    def _runner(tmp_path, source_repo=None):
         from agent_skill_eval.runner import EvalRunner
 
         skill_path = tmp_path / "skill"
@@ -293,6 +321,7 @@ class TestBuildCleanupEntryPrNumbers:
             workspace_base=tmp_path / "ws",
             agents=[],
             with_baseline=False,
+            source_repo=source_repo,
         )
 
     @staticmethod
@@ -374,6 +403,18 @@ class TestBuildCleanupEntryPrNumbers:
             post_prs=[{"number": 11}],
         )
         assert entry.pr_numbers == [11]
+
+    def test_gitlab_source_records_mr_numbers(self, tmp_path):
+        entry = self._entry(
+            self._runner(tmp_path, source_repo="git@gitlab.example.com:group/sub/repo.git"),
+            pre_prs=[],
+            post_prs=[{"number": 12, "headRefName": "feature/eval-x", "state": "OPEN"}],
+            post_remote_branches=["feature/eval-x"],
+        )
+        assert entry.pr_numbers == []
+        assert entry.merge_request_numbers == [12]
+        assert entry.source_repo_provider == "gitlab"
+        assert entry.source_repo_project == "group/sub/repo"
 
 
 class TestGradeCommand:

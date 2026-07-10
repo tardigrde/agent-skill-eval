@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
+import json
+
+from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider, state_diff
 from agent_skill_eval.models import GitStateSnapshot
 
 from .conftest import _init_git_workspace
@@ -153,3 +155,91 @@ class TestGitHubRepoSlug:
 
         assert gh_calls
         assert gh_calls[0][gh_calls[0].index("--repo") + 1] == "owner/repo"
+
+    def test_capture_uses_project_path_for_glab(self, tmp_path, monkeypatch):
+        glab_calls: list[list[str]] = []
+        sha = "a" * 40
+
+        def fake_run(args, cwd):
+            if args[0] == "glab":
+                glab_calls.append(args)
+                return json.dumps(
+                    [
+                        {
+                            "iid": "9",
+                            "source_branch": "feature/eval-x",
+                            "target_branch": "main",
+                            "web_url": "https://gitlab.example.com/group/sub/repo/-/merge_requests/9",
+                            "state": "opened",
+                        }
+                    ]
+                )
+            if args[:3] == ["git", "branch", "-a"]:
+                return "* main\n"
+            if args[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                return "main\n"
+            if args[:2] == ["git", "rev-parse"]:
+                return f"{sha}\n"
+            if args[:3] == ["git", "rev-list", "--all"]:
+                return "1\n"
+            if args[:3] == ["git", "log", "--all"] and "%H" in args[-1]:
+                return sha
+            if args[:3] == ["git", "log", "--all"]:
+                return "aaaaaaa init"
+            if args[:3] == ["git", "for-each-ref", "refs/heads"]:
+                return f"main {sha}\n"
+            if args[:3] == ["git", "for-each-ref", "refs/remotes"]:
+                return ""
+            if args[:2] == ["git", "remote"]:
+                return "origin git@gitlab.example.com:group/sub/repo.git (fetch)\n"
+            return ""
+
+        monkeypatch.setattr("agent_skill_eval.git_state._run", fake_run)
+
+        snap = capture_git_state(tmp_path, source_repo="git@gitlab.example.com:group/sub/repo.git")
+
+        assert glab_calls
+        assert glab_calls[0][glab_calls[0].index("-R") + 1] == "group/sub/repo"
+        assert snap.open_prs == [
+            {
+                "number": 9,
+                "headRefName": "feature/eval-x",
+                "baseRefName": "main",
+                "url": "https://gitlab.example.com/group/sub/repo/-/merge_requests/9",
+                "state": "OPEN",
+            }
+        ]
+
+
+class TestRepoProvider:
+    def test_detects_github(self):
+        assert repo_provider("git@github.com:owner/repo.git") == "github"
+
+    def test_detects_gitlab(self):
+        assert repo_provider("https://gitlab.example.com/group/sub/repo.git") == "gitlab"
+
+    def test_unknown_host_is_none(self):
+        assert repo_provider("https://example.com/group/repo.git") is None
+
+
+class TestRepoProjectPath:
+    def test_parses_github_https_project(self):
+        assert repo_project_path("https://github.com/owner/repo.git") == "owner/repo"
+
+    def test_parses_github_ssh_project(self):
+        assert repo_project_path("git@github.com:owner/repo.git") == "owner/repo"
+
+    def test_parses_gitlab_nested_project(self):
+        assert (
+            repo_project_path("git@gitlab.example.com:acme/platform/plugins/skill-eval-fixtures.git")
+            == "acme/platform/plugins/skill-eval-fixtures"
+        )
+
+    def test_parses_gitlab_https_nested_project(self):
+        assert (
+            repo_project_path("https://gitlab.example.com/acme/platform/plugins/skill-eval-fixtures.git")
+            == "acme/platform/plugins/skill-eval-fixtures"
+        )
+
+    def test_rejects_single_segment(self):
+        assert repo_project_path("repo") is None

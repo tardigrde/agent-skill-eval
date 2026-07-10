@@ -78,6 +78,50 @@ def _cost_totals(timings: list[dict]) -> dict:
     }
 
 
+def _run_full_pass(run: dict) -> bool:
+    summary = (run.get("grading") or {}).get("summary") or {}
+    return bool(summary.get("total", 0) > 0 and summary.get("failed", 0) == 0 and summary.get("skipped", 0) == 0)
+
+
+def _stability_summary(completed: list[dict]) -> dict:
+    groups: dict[tuple[str, str, bool], list[dict]] = {}
+    for run in completed:
+        key = (str(run.get("eval_id")), str(run.get("agent")), bool(run.get("with_skill")))
+        groups.setdefault(key, []).append(run)
+
+    rows = []
+    flaky = []
+    for (eval_id, agent, with_skill), runs in sorted(groups.items()):
+        full_passes = sum(1 for run in runs if _run_full_pass(run))
+        failed = len(runs) - full_passes
+        assertion_failures: dict[str, int] = {}
+        for run in runs:
+            for assertion in (run.get("grading") or {}).get("assertion_results", []):
+                if assertion.get("passed") or assertion.get("skipped"):
+                    continue
+                text = str(assertion.get("text", "assertion"))
+                assertion_failures[text] = assertion_failures.get(text, 0) + 1
+        row = {
+            "eval_id": eval_id,
+            "agent": agent,
+            "with_skill": with_skill,
+            "runs": len(runs),
+            "full_passes": full_passes,
+            "failures": failed,
+            "flaky": full_passes > 0 and failed > 0,
+            "failed_assertions": assertion_failures,
+        }
+        rows.append(row)
+        if row["flaky"]:
+            flaky.append(row)
+
+    return {
+        "groups": rows,
+        "flaky_groups": flaky,
+        "flaky_count": len(flaky),
+    }
+
+
 def build_run_summary(
     *,
     skill_name: str,
@@ -85,14 +129,17 @@ def build_run_summary(
     run_id: str,
     agents: list[str],
     eval_ids: list[str],
+    side_effect_levels: list[str],
     runs: int,
     with_baseline: bool,
     duration_seconds: float,
     results: dict[str, dict],
     benchmark: dict,
     cleanup: dict,
+    skill_hash: Optional[str] = None,
     budget: Optional[dict] = None,
     hooks: Optional[dict] = None,
+    skill_size: Optional[dict] = None,
 ) -> dict:
     """Build the iteration summary dict written to ``summary.json``."""
     completed = [r for r in results.values() if "timing" in r and "grading" in r]
@@ -116,6 +163,7 @@ def build_run_summary(
                 {
                     **identity,
                     "pass_rate": grading_summary.get("pass_rate", 0.0),
+                    "side_effect_level": r.get("side_effect_level"),
                     "failed_assertions": [
                         a["text"]
                         for a in r["grading"].get("assertion_results", [])
@@ -124,7 +172,13 @@ def build_run_summary(
                 }
             )
         if r["timing"].get("budget_exceeded"):
-            budget_exceeded.append({**identity, "reason": r["timing"].get("budget_reason")})
+            budget_exceeded.append(
+                {
+                    **identity,
+                    "side_effect_level": r.get("side_effect_level"),
+                    "reason": r["timing"].get("budget_reason"),
+                }
+            )
 
     timings = [r["timing"] for r in completed]
     pass_rates = {
@@ -133,10 +187,12 @@ def build_run_summary(
 
     summary = {
         "skill_name": skill_name,
+        "skill_hash": skill_hash,
         "iteration": iteration,
         "run_id": run_id,
         "agents": agents,
         "eval_ids": eval_ids,
+        "side_effect_levels": side_effect_levels,
         "runs_per_case": runs,
         "with_baseline": with_baseline,
         "duration_seconds": round(duration_seconds, 1),
@@ -148,12 +204,18 @@ def build_run_summary(
         "skipped_runs": skipped,
         "tokens": _token_totals(timings),
         "cost": _cost_totals(timings),
+        "stability": _stability_summary(completed),
         "cleanup": {
+            "source_repo_provider": cleanup.get("source_repo_provider"),
+            "source_repo_project": cleanup.get("source_repo_project") or cleanup.get("source_repo_slug"),
             "remote_branches": cleanup.get("remote_branches", []),
             "pr_numbers": cleanup.get("pr_numbers", []),
+            "merge_request_numbers": cleanup.get("merge_request_numbers", []),
             "workspaces": len(cleanup.get("workspaces", [])),
         },
     }
+    if skill_size:
+        summary["skill_size"] = skill_size
     if budget:
         summary["budget"] = {**budget, "exceeded_runs": budget_exceeded}
     if hooks:
@@ -224,6 +286,8 @@ def build_summary_from_artifacts(iteration_dir: Path) -> Optional[dict]:
                     "agent": meta.get("agent", agent_dir.name),
                     "with_skill": meta.get("with_skill", "with_skill" in config_dir.parts),
                     "run_index": meta.get("run_index", 1),
+                    "side_effect_level": meta.get("side_effect_level", "local-only"),
+                    "skill_hash": meta.get("skill_hash"),
                     "timing": timing,
                     "grading": grading,
                 }
@@ -261,10 +325,12 @@ def build_summary_from_artifacts(iteration_dir: Path) -> Optional[dict]:
         run_id=first.get("run_id", ""),
         agents=sorted({r["agent"] for r in results.values()}),
         eval_ids=sorted({str(r["eval_id"]) for r in results.values()}),
+        side_effect_levels=sorted({str(r.get("side_effect_level", "local-only")) for r in results.values()}),
         runs=max(r.get("run_index", 1) for r in results.values()),
         with_baseline=any(not r["with_skill"] for r in results.values()),
         duration_seconds=sum(r["timing"].get("duration_ms", 0) for r in results.values()) / 1000.0,
         results=results,
         benchmark=benchmark,
         cleanup=cleanup,
+        skill_hash=first.get("skill_hash"),
     )

@@ -11,8 +11,13 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from agent_skill_eval.cli import _parse_agent_models, app
-from agent_skill_eval.graders import grade_assertions
+from agent_skill_eval.cli import _discover_eval_suites, _discover_skills, _grader_settings, _parse_agent_models, app
+from agent_skill_eval.graders import (
+    DEFAULT_GRADER_MODEL,
+    OPENWEBUI_GRADER_BASE_URL,
+    OPENWEBUI_GRADER_MODEL,
+    grade_assertions,
+)
 from agent_skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, OpenCodeHarness, get_harness
 from agent_skill_eval.models import AgentType, EvalSuite
 from agent_skill_eval.runner import compute_benchmark, compute_stats
@@ -129,6 +134,31 @@ class TestSkippedGrading:
         assert results[0].skipped is True
         assert results[0].method == "llm"
         assert "LLM grading error" in results[0].evidence
+
+
+class TestOpenWebUIGraderOptions:
+    def test_openwebui_rewrites_default_model_and_key_file(self):
+        settings = _grader_settings(
+            grader_model=DEFAULT_GRADER_MODEL,
+            grader_base_url=None,
+            grader_key_file=None,
+            grader_openwebui=True,
+        )
+
+        assert settings["model"] == OPENWEBUI_GRADER_MODEL
+        assert settings["base_url"] == OPENWEBUI_GRADER_BASE_URL
+        assert settings["key_file"] == Path("/tmp/openwebui.key")
+        assert settings["allowed_models"] == (OPENWEBUI_GRADER_MODEL,)
+        assert settings["openwebui"] is True
+
+    def test_openwebui_rejects_other_models(self):
+        with pytest.raises(Exception):
+            _grader_settings(
+                grader_model="other/model",
+                grader_base_url=None,
+                grader_key_file=None,
+                grader_openwebui=True,
+            )
 
 
 class TestParseAgentModels:
@@ -251,6 +281,51 @@ class TestValidateCommand:
         assert result.exit_code == 1
         assert "not found" in result.output
 
+    def test_unsafe_fixture_path_fails(self, tmp_path):
+        bad = tmp_path / "evals.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "skill_name": "x",
+                    "evals": [
+                        {"id": 1, "prompt": "p", "expected_output": "e", "files": ["../secret.txt"]},
+                    ],
+                }
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate", str(bad)])
+        assert result.exit_code == 1
+        assert "Fixture path problems" in result.output
+        assert "stay inside the evals directory" in result.output
+
+    def test_fixture_workspace_target_collision_fails(self, tmp_path):
+        files = tmp_path / "files"
+        (files / "prod").mkdir(parents=True)
+        (files / "config.json").write_text("{}")
+        (files / "prod" / "config.json").write_text("{}")
+        bad = tmp_path / "evals.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "skill_name": "x",
+                    "evals": [
+                        {
+                            "id": 1,
+                            "prompt": "p",
+                            "expected_output": "e",
+                            "files": ["files/prod/config.json", "files/config.json"],
+                        },
+                    ],
+                }
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate", str(bad)])
+        assert result.exit_code == 1
+        assert "workspace fixture target" in result.output
+        assert "config.json" in result.output
+
     def test_duplicate_ids_fail(self, tmp_path):
         bad = tmp_path / "evals.json"
         bad.write_text(
@@ -268,6 +343,80 @@ class TestValidateCommand:
         result = runner.invoke(app, ["validate", str(bad)])
         assert result.exit_code == 1
         assert "Duplicate" in result.output
+
+    def test_structured_assertion_missing_required_field_fails(self, tmp_path):
+        bad = tmp_path / "evals.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "skill_name": "x",
+                    "evals": [
+                        {
+                            "id": "bad-assertion",
+                            "prompt": "p",
+                            "expected_output": "e",
+                            "assertions": [{"type": "command_ran"}],
+                        }
+                    ],
+                }
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate", str(bad)])
+        assert result.exit_code == 1
+        assert "Structured assertion problems" in result.output
+        assert "missing required field" in result.output
+        assert "command" in result.output
+
+    def test_negative_structured_assertions_missing_required_field_fail(self, tmp_path):
+        bad = tmp_path / "evals.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "skill_name": "x",
+                    "evals": [
+                        {
+                            "id": "bad-negative-assertion",
+                            "prompt": "p",
+                            "expected_output": "e",
+                            "assertions": [
+                                {"type": "file_not_contains"},
+                                {"type": "json_path_not_exists"},
+                            ],
+                        }
+                    ],
+                }
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate", str(bad)])
+        assert result.exit_code == 1
+        assert "Structured assertion problems" in result.output
+        assert "contains" in result.output
+        assert "json_path" in result.output
+
+    def test_structured_assertion_rejects_unsafe_path(self, tmp_path):
+        bad = tmp_path / "evals.json"
+        bad.write_text(
+            json.dumps(
+                {
+                    "skill_name": "x",
+                    "evals": [
+                        {
+                            "id": "bad-path",
+                            "prompt": "p",
+                            "expected_output": "e",
+                            "assertions": [{"type": "file_exists", "path": "../secret.txt"}],
+                        }
+                    ],
+                }
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate", str(bad)])
+        assert result.exit_code == 1
+        assert "path must be relative" in result.output
+        assert "inside the workspace" in result.output
 
 
 class TestListCommand:
@@ -295,6 +444,60 @@ class TestInitScaffold:
         skill_md = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert skill_md.startswith("---")
         assert "name: my-skill" in skill_md
+
+    @pytest.mark.parametrize("template", ["basic", "review-diff", "commit-pr", "config-validator"])
+    def test_init_templates_create_valid_evals(self, tmp_path, template):
+        runner = CliRunner()
+        result = runner.invoke(app, ["init", "my-skill", "--output", str(tmp_path), "--template", template])
+        assert result.exit_code == 0, result.output
+
+        evals_path = tmp_path / "my-skill" / "evals" / "evals.json"
+        validate = runner.invoke(app, ["validate", str(evals_path)])
+        assert validate.exit_code == 0, validate.output
+
+    def test_init_plugin_layout_creates_plugin_skill_tree(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "init",
+                "my-skill",
+                "--output",
+                str(tmp_path),
+                "--layout",
+                "plugin",
+                "--plugin",
+                "demo-plugin",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        skill_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "my-skill"
+        evals_path = skill_dir / "evals" / "evals.json"
+        assert evals_path.exists()
+        assert (skill_dir / "SKILL.md").exists()
+        validate = runner.invoke(app, ["validate-all", "--root", str(tmp_path), "--format", "json"])
+        assert validate.exit_code == 0, validate.output
+        payload = json.loads(validate.output)
+        assert payload["suites"][0]["pair"]["skill_dir"] == "plugins/demo-plugin/skills/my-skill"
+
+    def test_init_plugin_layout_requires_plugin_name(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(app, ["init", "my-skill", "--output", str(tmp_path), "--layout", "plugin"])
+        assert result.exit_code == 1
+        assert "--plugin is required" in result.output
+
+    def test_commit_pr_template_marks_live_external_cases(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(app, ["init", "ship-it", "--output", str(tmp_path), "--template", "commit-pr"])
+        assert result.exit_code == 0, result.output
+
+        evals = json.loads((tmp_path / "ship-it" / "evals" / "evals.json").read_text())
+        levels = {case["id"]: case.get("side_effect_level") for case in evals["evals"]}
+        assert levels["explicit-commit-pr"] == "live-external"
+        assert levels["natural-trigger"] == "live-external"
+        assert levels["status-only-negative-control"] == "static"
+        assert (tmp_path / "ship-it" / "evals" / "files" / "sample_change.py").exists()
 
 
 class TestCompareCommand:
@@ -339,6 +542,284 @@ class TestSchemaInSync:
         generated["$schema"] = "https://json-schema.org/draft/2020-12/schema"
         generated["title"] = "agent-skill-eval eval suite"
         assert checked_in == generated, "Regenerate schemas/evals.schema.json from EvalSuite.model_json_schema()"
+
+
+class TestListDiscovery:
+    def test_list_recurses_into_plugin_style_skill_layouts(self, tmp_path):
+        skill_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "readme-updater"
+        evals_dir = skill_dir / "evals"
+        evals_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: readme-updater\ndescription: update readmes\n---\nbody",
+            encoding="utf-8",
+        )
+        (evals_dir / "evals.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "readme-updater",
+                    "evals": [{"id": "static", "prompt": "p", "expected_output": "ok"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        ignored = tmp_path / ".venv" / "skills" / "ignored"
+        ignored.mkdir(parents=True)
+        (ignored / "SKILL.md").write_text("---\nname: ignored\ndescription: ignored\n---\nbody", encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["list", "--root", str(tmp_path)])
+
+        assert _discover_eval_suites(tmp_path) == [evals_dir / "evals.json"]
+        assert _discover_skills(tmp_path) == [skill_dir / "SKILL.md"]
+        assert result.exit_code == 0, result.output
+        assert "readme-updater" in result.output
+        assert "plugins/demo-plugin/skills/readme-updater" in result.output
+        assert "ignored" not in result.output
+
+        json_result = runner.invoke(app, ["list", "--root", str(tmp_path), "--format", "json"])
+        assert json_result.exit_code == 0, json_result.output
+        payload = json.loads(json_result.output)
+        assert payload["eval_suites"] == [
+            {
+                "skill": "readme-updater",
+                "path": "plugins/demo-plugin/skills/readme-updater/evals/evals.json",
+                "cases": 1,
+                "error": None,
+            }
+        ]
+        assert payload["skills"] == ["plugins/demo-plugin/skills/readme-updater"]
+        assert payload["pairs"] == [
+            {
+                "status": "paired",
+                "skill": "readme-updater",
+                "skill_dir": "plugins/demo-plugin/skills/readme-updater",
+                "evals_path": "plugins/demo-plugin/skills/readme-updater/evals/evals.json",
+                "problems": [],
+            }
+        ]
+
+
+class TestPortfolioReport:
+    def _write_skill(self, root: Path, name: str, *, with_evals: bool = True) -> Path:
+        skill_dir = root / "plugins" / "demo-plugin" / "skills" / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill\n---\nUse this skill for useful work.",
+            encoding="utf-8",
+        )
+        if with_evals:
+            evals_dir = skill_dir / "evals"
+            evals_dir.mkdir()
+            (evals_dir / "evals.json").write_text(
+                json.dumps(
+                    {
+                        "skill_name": name,
+                        "evals": [
+                            {
+                                "id": "static",
+                                "prompt": "p",
+                                "expected_output": "ok",
+                                "side_effect_level": "static",
+                                "assertions": ["The output contains `ok`"],
+                            },
+                            {
+                                "id": "local",
+                                "prompt": "p",
+                                "expected_output": "ok",
+                                "side_effect_level": "local-only",
+                                "assertions": ["The response is high quality"],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return skill_dir
+
+    def test_portfolio_json_reports_coverage_size_and_latest_run(self, tmp_path):
+        repo = tmp_path / "repo"
+        self._write_skill(repo, "readme-updater")
+        self._write_skill(repo, "orphan", with_evals=False)
+
+        workspace = tmp_path / "workspace"
+        latest = workspace / "readme-updater-workspace" / "iteration-2"
+        latest.mkdir(parents=True)
+        (latest / "summary.json").write_text(
+            json.dumps(
+                {
+                    "runs_completed": 2,
+                    "runs_failed_grading": 0,
+                    "errors": [],
+                    "pass_rates": {"fake_with_skill": 1.0},
+                    "stability": {"flaky_count": 0},
+                    "tokens": {"total": 10},
+                    "cost": {"total_usd": 0.0},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["portfolio", "--root", str(repo), "--workspace", str(workspace), "--format", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["skills"] == 2
+        assert payload["paired"] == 1
+        assert payload["missing_evals"] == 1
+        rows = {row["skill"]: row for row in payload["rows"]}
+        readme = rows["readme-updater"]
+        assert readme["eval_status"] == "valid"
+        assert readme["eval_cases"] == 2
+        assert readme["assertions"] == 2
+        assert readme["llm_assertions"] == 1
+        assert readme["side_effect_counts"] == {"static": 1, "local-only": 1}
+        assert readme["skill_size"]["files"] == 1
+        assert readme["latest_run"]["iteration"] == 2
+        assert readme["pass_rates"] == {"fake_with_skill": 1.0}
+        assert rows["orphan"]["status"] == "missing-evals"
+        assert rows["orphan"]["next"] == "Add evals"
+
+    def test_portfolio_table_renders(self, tmp_path):
+        repo = tmp_path / "repo"
+        self._write_skill(repo, "readme-updater")
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["portfolio", "--root", str(repo)])
+
+        assert result.exit_code == 0, result.output
+        assert "Skill Portfolio" in result.output
+        assert "readme-updater" in result.output
+        assert "Tighten assertions" in result.output
+
+
+class TestValidateAll:
+    def test_validate_all_recurses_into_plugin_style_layouts(self, tmp_path):
+        skill_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "readme-updater"
+        evals_dir = skill_dir / "evals"
+        evals_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: readme-updater\ndescription: update readmes\n---\nbody",
+            encoding="utf-8",
+        )
+        (evals_dir / "evals.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "readme-updater",
+                    "evals": [
+                        {
+                            "id": "static",
+                            "prompt": "p",
+                            "expected_output": "ok",
+                            "side_effect_level": "static",
+                            "assertions": ["The output contains `ok`"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate-all", "--root", str(tmp_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "readme-updater" in result.output
+        assert "All 1 eval suite(s) valid" in result.output
+
+        json_result = runner.invoke(app, ["validate-all", "--root", str(tmp_path), "--format", "json"])
+        assert json_result.exit_code == 0, json_result.output
+        payload = json.loads(json_result.output)
+        assert payload["failures"] == 0
+        assert payload["suites"][0]["skill"] == "readme-updater"
+        assert payload["suites"][0]["path"] == "plugins/demo-plugin/skills/readme-updater/evals/evals.json"
+        assert payload["suites"][0]["pair"]["status"] == "paired"
+
+    def test_validate_all_strict_flags_low_signal_suites(self, tmp_path):
+        skill_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "weak-skill"
+        evals_dir = skill_dir / "evals"
+        evals_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: weak-skill\ndescription: weak suite\n---\nbody",
+            encoding="utf-8",
+        )
+        (evals_dir / "evals.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "weak-skill",
+                    "evals": [
+                        {
+                            "id": "happy",
+                            "prompt": "p",
+                            "expected_output": "ok",
+                            "side_effect_level": "static",
+                            "force_skill_invocation": True,
+                            "assertions": ["The agent produces a good answer"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate-all", "--root", str(tmp_path), "--strict", "--format", "json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["failures"] == 1
+        assert payload["suites"][0]["status"] == "strict_fail"
+        assert any(
+            warning.startswith("all evals force skill invocation")
+            for warning in payload["suites"][0]["strict_warnings"]
+        )
+        assert "suite has no negative or missing-input control case" in payload["suites"][0]["strict_warnings"]
+
+    def test_validate_all_fails_when_any_suite_is_invalid(self, tmp_path):
+        evals_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "bad-skill" / "evals"
+        evals_dir.mkdir(parents=True)
+        (evals_dir / "evals.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "bad-skill",
+                    "evals": [
+                        {"id": "same", "prompt": "p", "expected_output": "ok"},
+                        {"id": "same", "prompt": "p", "expected_output": "ok"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate-all", "--root", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Duplicate eval ids:" in result.output
+        assert "['same']" in result.output
+
+    def test_validate_all_fails_plugin_style_suite_without_skill_md(self, tmp_path):
+        evals_dir = tmp_path / "plugins" / "demo-plugin" / "skills" / "orphan-skill" / "evals"
+        evals_dir.mkdir(parents=True)
+        (evals_dir / "evals.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "orphan-skill",
+                    "evals": [{"id": "static", "prompt": "p", "expected_output": "ok"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["validate-all", "--root", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "Missing SKILL.md" in result.output
+        assert "plugin-style eval suite" in result.output
 
 
 class TestRunsLayout:

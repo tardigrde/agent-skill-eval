@@ -5,18 +5,52 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from openai import OpenAI, OpenAIError
 from rich.console import Console
 
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
-from agent_skill_eval.models import AssertionResult, GitStateSnapshot, GradingResult, GradingSummary
+from agent_skill_eval.models import (
+    AssertionResult,
+    AssertionSpec,
+    GitStateSnapshot,
+    GradingResult,
+    GradingSummary,
+    StructuredAssertion,
+)
 
 console = Console(stderr=True)
 
+DEFAULT_GRADER_MODEL = "deepseek/deepseek-v4-flash"
+OPENWEBUI_GRADER_BASE_URL = "http://localhost:8080/api"
+OPENWEBUI_GRADER_MODEL = "gemini-3.1-flash-lite"
+OPENWEBUI_GRADER_MODELS = (OPENWEBUI_GRADER_MODEL,)
 
-def classify_assertion(assertion: str) -> str:
+
+def _coerce_structured_assertion(assertion: AssertionSpec | dict[str, Any]) -> StructuredAssertion | None:
+    if isinstance(assertion, StructuredAssertion):
+        return assertion
+    if isinstance(assertion, dict):
+        return StructuredAssertion(**assertion)
+    return None
+
+
+def assertion_text(assertion: AssertionSpec | dict[str, Any]) -> str:
+    structured = _coerce_structured_assertion(assertion)
+    if structured is None:
+        return str(assertion)
+    if structured.text:
+        return structured.text
+    details = []
+    for field in ("path", "contains", "command", "json_path"):
+        value = getattr(structured, field)
+        if value:
+            details.append(f"{field}={value!r}")
+    return structured.type if not details else f"{structured.type} ({', '.join(details)})"
+
+
+def classify_assertion(assertion: AssertionSpec | dict[str, Any]) -> str:
     """Return the deterministic check an assertion text routes to, or ``"llm"``.
 
     Mirrors the routing in ``DeterministicGrader._check_assertion`` exactly.
@@ -24,6 +58,13 @@ def classify_assertion(assertion: str) -> str:
     through to the LLM rubric (nondeterministic, needs an API key) instead of
     that happening silently at run time.
     """
+    structured = _coerce_structured_assertion(assertion)
+    if structured is not None:
+        return f"structured:{structured.type}"
+
+    if not isinstance(assertion, str):
+        return "llm"
+
     assertion_lower = assertion.lower()
 
     if "branch" in assertion_lower and (
@@ -190,7 +231,7 @@ class DeterministicGrader:
 
     def grade(
         self,
-        assertions: list[str],
+        assertions: list[AssertionSpec],
         output_dir: Path,
         agent_output: str,
         workspace: Path | None = None,
@@ -233,13 +274,17 @@ class DeterministicGrader:
 
     def _check_assertion(
         self,
-        assertion: str,
+        assertion: AssertionSpec,
         output_dir: Path,
         agent_output: str,
         workspace: Path | None,
         should_trigger: bool,
         diff: dict,
     ) -> AssertionResult:
+        structured = _coerce_structured_assertion(assertion)
+        if structured is not None:
+            return self._check_structured_assertion(structured, output_dir, agent_output, workspace)
+
         method = classify_assertion(assertion)
 
         if method == "git-branch":
@@ -260,10 +305,47 @@ class DeterministicGrader:
             return self._check_valid_json(assertion, output_dir, agent_output, workspace)
 
         return AssertionResult(
-            text=assertion,
+            text=assertion_text(assertion),
             passed=False,
-            evidence=f"Could not deterministically check: {assertion}",
+            evidence=f"Could not deterministically check: {assertion_text(assertion)}",
             method="unknown",
+        )
+
+    def _check_structured_assertion(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+    ) -> AssertionResult:
+        if assertion.type == "file_exists":
+            return self._check_structured_file_exists(assertion, output_dir, workspace, expected=True)
+        if assertion.type == "file_not_exists":
+            return self._check_structured_file_exists(assertion, output_dir, workspace, expected=False)
+        if assertion.type == "file_contains":
+            return self._check_structured_file_contains(assertion, output_dir, agent_output, workspace, expected=True)
+        if assertion.type == "file_not_contains":
+            return self._check_structured_file_contains(assertion, output_dir, agent_output, workspace, expected=False)
+        if assertion.type == "file_unchanged":
+            return self._check_structured_file_unchanged(assertion, output_dir, workspace)
+        if assertion.type == "command_ran":
+            return self._check_structured_command(assertion, output_dir, expected=True)
+        if assertion.type == "command_not_ran":
+            return self._check_structured_command(assertion, output_dir, expected=False)
+        if assertion.type == "tests_pass":
+            return self._check_structured_tests_pass(assertion, output_dir, agent_output)
+        if assertion.type == "git_clean":
+            return self._check_structured_git_clean(assertion, output_dir, workspace)
+        if assertion.type == "json_path":
+            return self._check_structured_json_path(assertion, output_dir, agent_output, workspace, expected=True)
+        if assertion.type == "json_path_not_exists":
+            return self._check_structured_json_path(assertion, output_dir, agent_output, workspace, expected=False)
+
+        return AssertionResult(
+            text=assertion_text(assertion),
+            passed=False,
+            evidence=f"Unknown structured assertion type: {assertion.type}",
+            method=f"structured:{assertion.type}",
         )
 
     def _resolve_workspace(self, output_dir: Path, workspace: Path | None) -> Path:
@@ -291,6 +373,294 @@ class DeterministicGrader:
             return None
         repo = data.get("source_repo")
         return str(repo) if repo else None
+
+    def _structured_result(
+        self,
+        assertion: StructuredAssertion,
+        passed: bool,
+        evidence: str,
+    ) -> AssertionResult:
+        return AssertionResult(
+            text=assertion_text(assertion),
+            passed=passed,
+            evidence=evidence,
+            method=f"structured:{assertion.type}",
+        )
+
+    def _structured_workspace_path(
+        self, assertion: StructuredAssertion, output_dir: Path, workspace: Path | None
+    ) -> tuple[Path | None, Path | None, AssertionResult | None]:
+        if not assertion.path:
+            return None, None, self._structured_result(assertion, False, "Structured assertion requires 'path'")
+        rel = Path(assertion.path)
+        if rel.is_absolute() or ".." in rel.parts:
+            return (
+                None,
+                None,
+                self._structured_result(assertion, False, f"Path must be relative and stay inside workspace: {rel}"),
+            )
+        ws = self._resolve_workspace(output_dir, workspace)
+        if not ws.exists():
+            return None, None, self._structured_result(assertion, False, "Workspace not available")
+        return ws, ws / rel, None
+
+    def _combined_logs(self, output_dir: Path, agent_output: str = "") -> str:
+        chunks = [agent_output]
+        for name in ("stdout.log", "stderr.log"):
+            path = output_dir / name
+            if path.exists():
+                chunks.append(path.read_text(errors="replace"))
+        return "\n".join(chunks)
+
+    def _executed_commands(self, output_dir: Path) -> list[str]:
+        commands: list[str] = []
+        for name in ("stdout.log", "stderr.log"):
+            path = output_dir / name
+            if not path.exists():
+                continue
+            for line in path.read_text(errors="replace").splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                item = event.get("item") if isinstance(event, dict) else None
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "command_execution" and item.get("command"):
+                    commands.append(str(item["command"]))
+                    continue
+                tool_name = item.get("tool_name") or item.get("name")
+                if item.get("type") in {"tool_call", "mcp_tool_call", "function_call"} and tool_name:
+                    commands.append(str(tool_name))
+        return commands
+
+    def _command_found(self, output_dir: Path, command: str) -> tuple[bool, str]:
+        structured_commands = self._executed_commands(output_dir)
+        if structured_commands:
+            command_lower = command.lower()
+            for executed in structured_commands:
+                if command_lower in executed.lower():
+                    return True, f"Command found in structured command log: {executed}"
+            return False, "Command not found in structured command logs"
+
+        logs = self._combined_logs(output_dir).lower()
+        if command.lower() in logs:
+            return True, "Command found in logs"
+        return False, "Command not found in logs"
+
+    def _check_structured_file_exists(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        workspace: Path | None,
+        expected: bool,
+    ) -> AssertionResult:
+        _ws, path, error = self._structured_workspace_path(assertion, output_dir, workspace)
+        if error:
+            return error
+        assert path is not None
+        exists = path.exists()
+        if exists == expected:
+            verb = "exists" if expected else "does not exist"
+            return self._structured_result(assertion, True, f"{path.name} {verb}")
+        verb = "exists" if exists else "does not exist"
+        return self._structured_result(assertion, False, f"{assertion.path} {verb}")
+
+    def _check_structured_file_contains(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+        *,
+        expected: bool,
+    ) -> AssertionResult:
+        if not assertion.contains:
+            return self._structured_result(assertion, False, "Structured assertion requires 'contains'")
+
+        if not assertion.path:
+            found = assertion.contains.lower() in agent_output.lower()
+            if found == expected:
+                evidence = "Pattern found in agent output" if found else "Pattern absent from agent output"
+                return self._structured_result(assertion, True, evidence)
+            evidence = "Pattern found in agent output" if found else "Pattern not found in agent output"
+            return self._structured_result(assertion, False, evidence)
+
+        _ws, path, error = self._structured_workspace_path(assertion, output_dir, workspace)
+        if error:
+            return error
+        assert path is not None
+        if not path.exists():
+            return self._structured_result(assertion, False, f"File not found: {assertion.path}")
+        try:
+            content = path.read_text(errors="replace")
+        except OSError as e:
+            return self._structured_result(assertion, False, f"Could not read {assertion.path}: {e}")
+        found = assertion.contains.lower() in content.lower()
+        if found == expected:
+            evidence = f"Pattern found in {assertion.path}" if found else f"Pattern absent from {assertion.path}"
+            return self._structured_result(assertion, True, evidence)
+        evidence = f"Pattern found in {assertion.path}" if found else f"Pattern not found in {assertion.path}"
+        return self._structured_result(assertion, False, evidence)
+
+    def _check_structured_file_unchanged(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        workspace: Path | None,
+    ) -> AssertionResult:
+        ws, path, error = self._structured_workspace_path(assertion, output_dir, workspace)
+        if error:
+            return error
+        assert ws is not None and path is not None
+
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", assertion.path],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status.returncode == 0 and status.stdout.strip():
+            return self._structured_result(assertion, False, f"Uncommitted change detected: {status.stdout.strip()}")
+
+        if self.pre_state and self.post_state and self.pre_state.head_sha and self.post_state.head_sha:
+            diff = subprocess.run(
+                ["git", "diff", "--name-only", self.pre_state.head_sha, self.post_state.head_sha, "--", assertion.path],
+                cwd=ws,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if diff.returncode == 0 and diff.stdout.strip():
+                return self._structured_result(assertion, False, f"Committed change detected: {diff.stdout.strip()}")
+
+        return self._structured_result(assertion, True, f"No change detected for {assertion.path}")
+
+    def _check_structured_command(
+        self, assertion: StructuredAssertion, output_dir: Path, expected: bool
+    ) -> AssertionResult:
+        if not assertion.command:
+            return self._structured_result(assertion, False, "Structured assertion requires 'command'")
+        found, evidence = self._command_found(output_dir, assertion.command)
+        if found == expected:
+            return self._structured_result(assertion, True, evidence)
+        return self._structured_result(assertion, False, evidence)
+
+    def _check_structured_tests_pass(
+        self, assertion: StructuredAssertion, output_dir: Path, agent_output: str
+    ) -> AssertionResult:
+        logs = self._combined_logs(output_dir, agent_output)
+        logs_lower = logs.lower()
+        if assertion.command and assertion.command.lower() not in logs_lower:
+            return self._structured_result(assertion, False, f"Test command not found in logs: {assertion.command}")
+
+        timing_path = output_dir.parent / "timing.json"
+        if timing_path.exists():
+            try:
+                timing = json.loads(timing_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                timing = {}
+            if timing.get("exit_code") not in (None, 0):
+                return self._structured_result(assertion, False, f"Agent exit code was {timing.get('exit_code')}")
+
+        failure_markers = (" failed", "failure", "traceback", "panic:", "error:")
+        pass_markers = (
+            " passed",
+            "all tests passed",
+            "test result: ok",
+            "build succeeded",
+            "tests passed",
+            "ok ",
+        )
+        if any(marker in logs_lower for marker in failure_markers):
+            return self._structured_result(assertion, False, "Failure marker found in logs")
+        if any(marker in logs_lower for marker in pass_markers):
+            return self._structured_result(assertion, True, "Pass marker found in logs")
+        return self._structured_result(assertion, False, "No test pass marker found in logs")
+
+    def _check_structured_git_clean(
+        self, assertion: StructuredAssertion, output_dir: Path, workspace: Path | None
+    ) -> AssertionResult:
+        ws = self._resolve_workspace(output_dir, workspace)
+        if not ws.exists():
+            return self._structured_result(assertion, False, "Workspace not available")
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=ws,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status.returncode != 0:
+            return self._structured_result(assertion, False, status.stderr.strip() or "git status failed")
+        if status.stdout.strip():
+            return self._structured_result(assertion, False, f"Workspace dirty: {status.stdout.strip()}")
+        return self._structured_result(assertion, True, "Workspace is clean")
+
+    def _load_json_source(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+    ) -> tuple[Any, AssertionResult | None]:
+        if assertion.path:
+            _ws, path, error = self._structured_workspace_path(assertion, output_dir, workspace)
+            if error:
+                return None, error
+            assert path is not None
+            if not path.exists():
+                return None, self._structured_result(assertion, False, f"File not found: {assertion.path}")
+            try:
+                return json.loads(path.read_text()), None
+            except (json.JSONDecodeError, OSError) as e:
+                return None, self._structured_result(
+                    assertion, False, f"Could not parse JSON from {assertion.path}: {e}"
+                )
+        try:
+            return json.loads(agent_output), None
+        except json.JSONDecodeError as e:
+            return None, self._structured_result(assertion, False, f"Could not parse agent output as JSON: {e}")
+
+    def _check_structured_json_path(
+        self,
+        assertion: StructuredAssertion,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None,
+        *,
+        expected: bool,
+    ) -> AssertionResult:
+        if not assertion.json_path:
+            return self._structured_result(assertion, False, "Structured assertion requires 'json_path'")
+        data, error = self._load_json_source(assertion, output_dir, agent_output, workspace)
+        if error:
+            return error
+
+        current = data
+        for part in assertion.json_path.split("."):
+            if isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    if not expected:
+                        return self._structured_result(assertion, True, f"JSON path absent at list index {part!r}")
+                    return self._structured_result(assertion, False, f"JSON path missing at list index {part!r}")
+            elif isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                if not expected:
+                    return self._structured_result(assertion, True, f"JSON path absent at {part!r}")
+                return self._structured_result(assertion, False, f"JSON path missing at {part!r}")
+
+        if not expected:
+            return self._structured_result(assertion, False, f"JSON path exists with value {current!r}")
+        if assertion.equals is not None and current != assertion.equals:
+            return self._structured_result(
+                assertion, False, f"JSON path value {current!r} != expected {assertion.equals!r}"
+            )
+        return self._structured_result(assertion, True, f"JSON path exists with value {current!r}")
 
     def _check_file_exists(self, assertion: str, output_dir: Path, workspace: Path | None = None) -> AssertionResult:
         ws = self._resolve_workspace(output_dir, workspace)
@@ -327,15 +697,28 @@ class DeterministicGrader:
         )
 
     def _check_command_ran(self, assertion: str, output_dir: Path) -> AssertionResult:
-        stderr_log = output_dir / "stderr.log"
-        stdout_log = output_dir / "stdout.log"
-
         commands_to_check = []
         for cmd in ["npm", "git", "python", "cargo", "go", "yarn", "pnpm"]:
             if cmd in assertion.lower():
                 commands_to_check.append(cmd)
 
-        for log_file in [stderr_log, stdout_log]:
+        structured_commands = self._executed_commands(output_dir)
+        if structured_commands:
+            for cmd in commands_to_check:
+                for executed in structured_commands:
+                    if cmd in executed.lower():
+                        return AssertionResult(
+                            text=assertion,
+                            passed=True,
+                            evidence=f"Found '{cmd}' in structured command log",
+                        )
+            return AssertionResult(
+                text=assertion,
+                passed=False,
+                evidence="Command not found in structured command logs",
+            )
+
+        for log_file in [output_dir / "stderr.log", output_dir / "stdout.log"]:
             if not log_file.exists():
                 continue
             content = log_file.read_text().lower()
@@ -666,22 +1049,51 @@ class DeterministicGrader:
 
 
 class LLMGrader:
-    def __init__(self, model: str = "deepseek/deepseek-v4-flash", base_url: str | None = None):
+    def __init__(
+        self,
+        model: str = DEFAULT_GRADER_MODEL,
+        base_url: str | None = None,
+        api_key_file: Path | str | None = None,
+        allowed_models: tuple[str, ...] | list[str] | None = None,
+    ):
         self.model = model
         self.base_url = base_url
+        self.api_key_file = Path(api_key_file) if api_key_file else None
+        self.allowed_models = tuple(allowed_models) if allowed_models else None
         self._client = None
+        if self.allowed_models and self.model not in self.allowed_models:
+            allowed = ", ".join(self.allowed_models)
+            raise ValueError(f"Grader model {self.model!r} is not allowed for this backend; choose one of: {allowed}")
 
     @staticmethod
-    def has_credentials() -> bool:
-        """True if an API key for the grader is available in the environment."""
+    def has_credentials(api_key_file: Path | str | None = None) -> bool:
+        """True if an API key for the grader is available."""
+        if api_key_file:
+            try:
+                return bool(Path(api_key_file).read_text(encoding="utf-8").strip())
+            except OSError:
+                return False
         return bool(os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY"))
+
+    def _resolve_api_key(self) -> str:
+        if self.api_key_file:
+            try:
+                api_key = self.api_key_file.read_text(encoding="utf-8").strip()
+            except OSError as e:
+                raise OpenAIError(f"Grader API key file is not readable: {self.api_key_file}") from e
+            if not api_key:
+                raise OpenAIError(f"Grader API key file is empty: {self.api_key_file}")
+            return api_key
+
+        api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise OpenAIError("OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable.")
+        return api_key
 
     @property
     def client(self):
         if self._client is None:
-            api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
-            if not api_key:
-                raise OpenAIError("OPENROUTER_API_KEY or OPENAI_API_KEY not set. Set it via environment variable.")
+            api_key = self._resolve_api_key()
             base_url = self.base_url or os.environ.get("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
             self._client = OpenAI(
                 api_key=api_key,
@@ -876,7 +1288,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
 
 
 def grade_assertions(
-    assertions: list[str],
+    assertions: list[AssertionSpec],
     agent_output: str,
     output_dir: Path,
     expected_output: str,
@@ -909,7 +1321,7 @@ def grade_assertions(
                 passed=False,
                 evidence=(
                     "Not deterministically checkable and no LLM grader configured "
-                    "(set OPENROUTER_API_KEY or OPENAI_API_KEY); assertion skipped"
+                    "(set OPENROUTER_API_KEY, OPENAI_API_KEY, or pass a grader key file); assertion skipped"
                 ),
                 method="skipped",
                 skipped=True,

@@ -11,7 +11,8 @@
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
-        "A pull request was created or the PR URL is mentioned in the output"
+        "Changes were pushed to remote",
+        "A pull request was created"
       ]
     },
     {
@@ -22,7 +23,8 @@
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
-        "A pull request was created or the PR URL is mentioned in the output"
+        "Changes were pushed to remote",
+        "A pull request was created"
       ]
     },
     {
@@ -33,7 +35,8 @@
       "assertions": [
         "A new git branch was created",
         "A git commit was created",
-        "A pull request was created or the PR URL is mentioned in the output"
+        "Changes were pushed to remote",
+        "A pull request was created"
       ]
     },
     {

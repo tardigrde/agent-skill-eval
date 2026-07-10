@@ -30,7 +30,14 @@
         },
         "assertions": {
           "items": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/StructuredAssertion"
+              }
+            ]
           },
           "title": "Assertions",
           "type": "array"
@@ -49,6 +56,28 @@
           "default": false,
           "title": "Stage Files",
           "type": "boolean"
+        },
+        "side_effect_level": {
+          "default": "local-only",
+          "enum": [
+            "static",
+            "local-only",
+            "live-safe",
+            "live-external"
+          ],
+          "title": "Side Effect Level",
+          "type": "string"
+        },
+        "side_effect_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SideEffectContract"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -57,6 +86,131 @@
         "expected_output"
       ],
       "title": "EvalCase",
+      "type": "object"
+    },
+    "SideEffectContract": {
+      "additionalProperties": false,
+      "description": "Optional first-class side-effect allowance for an eval case.",
+      "properties": {
+        "allow_new_local_branches": {
+          "default": true,
+          "title": "Allow New Local Branches",
+          "type": "boolean"
+        },
+        "allow_new_remote_branches": {
+          "default": true,
+          "title": "Allow New Remote Branches",
+          "type": "boolean"
+        },
+        "allow_new_commits": {
+          "default": true,
+          "title": "Allow New Commits",
+          "type": "boolean"
+        },
+        "allow_new_review_requests": {
+          "default": true,
+          "title": "Allow New Review Requests",
+          "type": "boolean"
+        },
+        "allow_worktree_changes": {
+          "default": true,
+          "title": "Allow Worktree Changes",
+          "type": "boolean"
+        }
+      },
+      "title": "SideEffectContract",
+      "type": "object"
+    },
+    "StructuredAssertion": {
+      "additionalProperties": false,
+      "description": "A deterministic assertion with explicit fields instead of prose routing.",
+      "properties": {
+        "type": {
+          "enum": [
+            "file_exists",
+            "file_not_exists",
+            "file_contains",
+            "file_not_contains",
+            "file_unchanged",
+            "command_ran",
+            "command_not_ran",
+            "tests_pass",
+            "git_clean",
+            "json_path",
+            "json_path_not_exists"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "contains": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contains"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Json Path"
+        },
+        "equals": {
+          "default": null,
+          "title": "Equals"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "StructuredAssertion",
       "type": "object"
     }
   },
