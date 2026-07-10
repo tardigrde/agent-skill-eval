@@ -297,6 +297,65 @@ class TestSummaryAndStatus:
         assert summary["cost"]["total_usd"] == 0.0
         assert summary["cost"]["runs_with_cost"] == len(ALL_EVAL_IDS)
         assert "fake_with_skill" in summary["pass_rates"]
+        assert summary["skill_size"]["skill_md"]["words"] > 0
+        assert summary["skill_size"]["files"] >= 1
+        assert any(item["path"] == "SKILL.md" for item in summary["skill_size"]["content_files"])
+
+    def test_compare_json_reports_size_and_changed_files(self, tmp_path):
+        first = _run_cli(tmp_path, "--eval-id", "explicit-invoke", "--iteration", "1")
+        assert first.exit_code == 0, first.output
+
+        skill_md = SKILL / "SKILL.md"
+        original = skill_md.read_text()
+        try:
+            skill_md.write_text(original + "\nextra local comparison note\n", encoding="utf-8")
+            second = _run_cli(tmp_path, "--eval-id", "explicit-invoke", "--iteration", "2")
+            assert second.exit_code == 0, second.output
+        finally:
+            skill_md.write_text(original, encoding="utf-8")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "compare",
+                "--workspace",
+                str(tmp_path / "format-json-workspace"),
+                "--format",
+                "json",
+                "1",
+                "2",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["skill_size_delta"]["words"] > 0
+        assert payload["changed_skill_files"] == ["SKILL.md"]
+        assert payload["rows"][0]["pass_rate_delta"] == 0.0
+
+    def test_archive_run_writes_compact_artifacts_without_raw_output_by_default(self, tmp_path):
+        result = _run_cli(tmp_path, "--eval-id", "explicit-invoke")
+        assert result.exit_code == 0, result.output
+
+        archive = tmp_path / "archive"
+        runner = CliRunner()
+        archived = runner.invoke(
+            app,
+            [
+                "archive-run",
+                "--workspace",
+                str(tmp_path / "format-json-workspace"),
+                "--output",
+                str(archive),
+            ],
+        )
+        assert archived.exit_code == 0, archived.output
+        assert (archive / "summary.json").exists()
+        assert (archive / "benchmark.json").exists()
+        assert (archive / "report.md").exists()
+        assert (archive / "archive-manifest.json").exists()
+        assert list(archive.glob("runs/**/grading.json"))
+        assert not list(archive.glob("runs/**/output.txt"))
 
     def test_status_command_reads_summary(self, tmp_path):
         run_result = _run_cli(tmp_path)
@@ -308,6 +367,71 @@ class TestSummaryAndStatus:
         assert "iteration-1" in result.output
         assert "Pass rates" in result.output
         assert "cost:" in result.output
+        assert "stability:" in result.output
+
+    def test_repeated_runs_record_stability_groups(self, tmp_path):
+        result = _run_cli(tmp_path, "--eval-id", "explicit-invoke", "--runs", "2")
+        assert result.exit_code == 0, result.output
+
+        summary = json.loads((_iteration_dir(tmp_path) / "summary.json").read_text())
+        stability = summary["stability"]
+        assert stability["flaky_count"] == 0
+        assert stability["groups"][0]["runs"] == 2
+        assert stability["groups"][0]["full_passes"] == 2
+
+    def test_side_effect_contract_fails_unexpected_worktree_change(self, tmp_path):
+        evals = tmp_path / "evals.json"
+        evals.write_text(
+            json.dumps(
+                {
+                    "skill_name": "format-json",
+                    "evals": [
+                        {
+                            "id": "unexpected-file",
+                            "prompt": "fake-create-file: touched.txt",
+                            "expected_output": "no side effect",
+                            "assertions": [],
+                            "side_effect_contract": {"allow_worktree_changes": False},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--skill",
+                str(SKILL),
+                "--evals",
+                str(evals),
+                "--agent",
+                "fake",
+                "--workspace",
+                str(tmp_path),
+                "--grader-model",
+                "",
+                "--no-baseline",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        grading = json.loads(
+            (
+                tmp_path
+                / "format-json-workspace"
+                / "iteration-1"
+                / "eval-unexpected-file"
+                / "fake"
+                / "with_skill"
+                / "grading.json"
+            ).read_text()
+        )
+        contract = [item for item in grading["assertion_results"] if item["method"] == "side-effect-contract"]
+        assert len(contract) == 1
+        assert contract[0]["passed"] is False
+        assert "touched.txt" in contract[0]["evidence"]
 
     def test_status_rebuilds_summary_for_old_runs(self, tmp_path):
         run_result = _run_cli(tmp_path)

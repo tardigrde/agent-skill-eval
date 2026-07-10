@@ -453,6 +453,12 @@ class FakeHarness(AgentHarness):
     def run(self, prompt: str, output_dir: Path) -> tuple[str, TimingData, str, str]:
         output_dir.mkdir(parents=True, exist_ok=True)
         skill_installed = any((self.workspace / ".fake" / "skills").glob("*/SKILL.md"))
+        for marker in ("fake-create-file:", "fake_create_file:"):
+            if marker in prompt:
+                rel = prompt.split(marker, 1)[1].split()[0].strip().strip("`'\"")
+                target = self.workspace / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("created by fake harness\n", encoding="utf-8")
         if skill_installed and ("format" in prompt.lower() or "$format-json" in prompt.lower()):
             final_output = '{\n  "formatted": true,\n  "status": "formatted-json-ok"\n}'
         else:

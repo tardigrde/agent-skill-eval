@@ -39,10 +39,7 @@ def validate(config_path: Path) -> list[str]:
         if key not in data:
             problems.append(f"STRUCTURAL: missing required key '{key}'")
         elif not isinstance(data[key], expected_type):
-            problems.append(
-                f"STRUCTURAL: key '{key}' must be {expected_type.__name__}, "
-                f"got {type(data[key]).__name__}"
-            )
+            problems.append(f"STRUCTURAL: key '{key}' must be {expected_type.__name__}, got {type(data[key]).__name__}")
 
     features = data.get("features")
     if features is not None and not isinstance(features, dict):

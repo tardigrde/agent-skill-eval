@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 from pathlib import Path
 
@@ -51,6 +53,71 @@ class SkillInstaller:
                 f"SKILL.md frontmatter name '{data['name']}' does not match skill directory name '{self.skill_name}'"
             )
         return problems
+
+    def content_hash(self) -> str:
+        """Hash SKILL.md and bundled resources that are installed with it."""
+        digest = hashlib.sha256()
+        for path in self._content_files():
+            rel = path.relative_to(self.skill_path).as_posix()
+            digest.update(rel.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def size_metrics(self) -> dict:
+        """Return compact size metadata for the installed skill payload.
+
+        This intentionally excludes ``evals/`` and cache directories just like
+        ``content_hash``: the metric is about what can affect agent behavior
+        after the skill is installed, not development fixtures.
+        """
+        files = []
+        total_bytes = 0
+        total_words = 0
+        for path in self._content_files():
+            rel = path.relative_to(self.skill_path).as_posix()
+            data = path.read_bytes()
+            text = data.decode("utf-8", errors="ignore")
+            words = len(re.findall(r"\b\S+\b", text))
+            digest = hashlib.sha256(data).hexdigest()
+            files.append({"path": rel, "bytes": len(data), "words": words, "sha256": digest})
+            total_bytes += len(data)
+            total_words += words
+
+        skill_text = self.skill_md.read_text(encoding="utf-8")
+        body_text = self._skill_body(skill_text)
+        return {
+            "files": len(files),
+            "bytes": total_bytes,
+            "words": total_words,
+            "skill_md": {
+                "bytes": len(skill_text.encode("utf-8")),
+                "words": len(re.findall(r"\b\S+\b", skill_text)),
+                "body_words": len(re.findall(r"\b\S+\b", body_text)),
+            },
+            "content_files": files,
+        }
+
+    @staticmethod
+    def _skill_body(text: str) -> str:
+        if not text.startswith("---"):
+            return text
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return text
+        return parts[2].strip()
+
+    def _content_files(self) -> list[Path]:
+        ignored_dirs = {"evals", "__pycache__", ".git"}
+        files: list[Path] = []
+        for path in sorted(self.skill_path.rglob("*")):
+            if path.is_dir():
+                continue
+            if any(part in ignored_dirs for part in path.relative_to(self.skill_path).parts):
+                continue
+            files.append(path)
+        return files
 
     def install(self, workspace: Path, agent_type: AgentType) -> Path:
         target_dirs = SKILL_PATHS[agent_type]

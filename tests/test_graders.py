@@ -4,8 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
-from agent_skill_eval.graders import DeterministicGrader
-from agent_skill_eval.models import GitStateSnapshot
+from agent_skill_eval.graders import DeterministicGrader, grade_assertions
+from agent_skill_eval.models import GitStateSnapshot, StructuredAssertion
 
 from .conftest import _init_git_workspace
 
@@ -403,6 +403,148 @@ class TestCheckValidJson:
             "not json at all",
         )
         assert not result.passed
+
+
+class TestStructuredAssertions:
+    def test_file_contains_passes_against_workspace_file(self, tmp_path):
+        (tmp_path / "README.md").write_text("hello from docs")
+        grading = grade_assertions(
+            [StructuredAssertion(type="file_contains", path="README.md", contains="hello")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert grading.assertion_results[0].method == "structured:file_contains"
+
+    def test_file_not_contains_passes_against_workspace_file(self, tmp_path):
+        (tmp_path / "payload.json").write_text('{"issue_type": "Sub-task"}')
+        grading = grade_assertions(
+            [StructuredAssertion(type="file_not_contains", path="payload.json", contains="customfield_18514")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert grading.assertion_results[0].method == "structured:file_not_contains"
+
+    def test_file_not_contains_fails_when_pattern_present(self, tmp_path):
+        (tmp_path / "payload.json").write_text('{"customfield_18514": "31088"}')
+        grading = grade_assertions(
+            [StructuredAssertion(type="file_not_contains", path="payload.json", contains="customfield_18514")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.failed == 1
+
+    def test_command_not_ran_passes_when_command_absent(self, tmp_path):
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "stdout.log").write_text("ran pytest -q")
+        grading = grade_assertions(
+            [StructuredAssertion(type="command_not_ran", command="terraform apply")],
+            agent_output="",
+            output_dir=output_dir,
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+
+    def test_command_not_ran_ignores_instruction_text_in_structured_command_output(self, tmp_path):
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "cat .codex/skills/create-jira-story/SKILL.md",
+                        "aggregated_output": "Do not call mcp__Telecontext__call_tool automatically.",
+                    },
+                }
+            )
+            + "\n"
+        )
+        grading = grade_assertions(
+            [StructuredAssertion(type="command_not_ran", command="mcp__Telecontext__call_tool")],
+            agent_output="",
+            output_dir=output_dir,
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert "structured command logs" in grading.assertion_results[0].evidence
+
+    def test_command_ran_uses_structured_command_records(self, tmp_path):
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "/usr/bin/zsh -lc 'terraform plan'",
+                        "aggregated_output": "",
+                    },
+                }
+            )
+            + "\n"
+        )
+        grading = grade_assertions(
+            [StructuredAssertion(type="command_ran", command="terraform plan")],
+            agent_output="",
+            output_dir=output_dir,
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert "terraform plan" in grading.assertion_results[0].evidence
+
+    def test_json_path_checks_agent_output(self, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="json_path", json_path="result.status", equals="ok")],
+            agent_output='{"result": {"status": "ok"}}',
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+
+    def test_json_path_not_exists_passes_when_path_absent(self, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="json_path_not_exists", json_path="additional_fields.customfield_18514")],
+            agent_output='{"additional_fields": {"parent": "PROJ-3480"}}',
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+
+    def test_json_path_not_exists_fails_when_path_present(self, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="json_path_not_exists", json_path="additional_fields.customfield_18514")],
+            agent_output='{"additional_fields": {"customfield_18514": "31088"}}',
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.failed == 1
+
+    def test_structured_assertion_dicts_are_supported(self, tmp_path):
+        grading = grade_assertions(
+            [{"type": "file_not_exists", "path": "unexpected.txt"}],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
 
 
 class TestCheckPushed:

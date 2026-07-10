@@ -16,8 +16,9 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from agent_skill_eval import __version__
-from agent_skill_eval.git_state import capture_git_state, github_repo_slug
-from agent_skill_eval.graders import LLMGrader, grade_assertions, summarize_assertion_results
+from agent_skill_eval.fixtures import build_fixture_file_map
+from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider
+from agent_skill_eval.graders import DEFAULT_GRADER_MODEL, LLMGrader, grade_assertions, summarize_assertion_results
 from agent_skill_eval.harnesses import HARNESSES, get_cli_version, get_harness
 from agent_skill_eval.hooks import apply_post_grade_hooks, run_suite_hooks
 from agent_skill_eval.models import (
@@ -38,6 +39,7 @@ from agent_skill_eval.models import (
 from agent_skill_eval.progress import ProgressLog, format_tokens, run_label
 from agent_skill_eval.skills import SkillInstaller
 from agent_skill_eval.summary import build_run_summary, write_run_summary
+from agent_skill_eval.validation import EvalSuiteValidationReport, load_and_validate_suite
 from agent_skill_eval.workspace import WorkspaceManager
 
 console = Console()
@@ -52,8 +54,10 @@ class EvalRunner:
         agents: list[AgentType],
         concurrency: int = 1,
         with_baseline: bool = True,
-        grader_model: str = "deepseek/deepseek-v4-flash",
+        grader_model: str = DEFAULT_GRADER_MODEL,
         grader_base_url: Optional[str] = None,
+        grader_key_file: Optional[Path] = None,
+        grader_allowed_models: Optional[tuple[str, ...]] = None,
         agent_models: Optional[dict[AgentType, str]] = None,
         source_repo: Optional[str] = None,
         harness_base_url: Optional[str] = None,
@@ -61,6 +65,7 @@ class EvalRunner:
         agent_max_retries: Optional[int] = None,
         runs: int = 1,
         eval_ids: Optional[list[str]] = None,
+        side_effect_levels: Optional[list[str]] = None,
         budget: Optional[BudgetConfig] = None,
         pricing: Optional[dict[str, dict]] = None,
         pre_run_commands: Optional[list[str]] = None,
@@ -76,6 +81,8 @@ class EvalRunner:
         self.with_baseline = with_baseline
         self.grader_model = grader_model
         self.grader_base_url = grader_base_url
+        self.grader_key_file = grader_key_file
+        self.grader_allowed_models = grader_allowed_models
         self.agent_models = agent_models or {}
         self.source_repo = source_repo
         self.harness_base_url = harness_base_url
@@ -83,6 +90,7 @@ class EvalRunner:
         self.agent_max_retries = agent_max_retries
         self.runs = max(1, runs)
         self.eval_ids = [str(e) for e in eval_ids] if eval_ids else []
+        self.side_effect_levels = [str(level) for level in side_effect_levels] if side_effect_levels else []
         self.budget = budget if budget and budget.enabled else None
         self.pricing = pricing or {}
         self.pre_run_commands = pre_run_commands or []
@@ -94,10 +102,22 @@ class EvalRunner:
         # One version probe per agent for the whole suite; recorded in every
         # run_meta.json so results are attributable to an exact CLI build.
         self._cli_versions: dict[AgentType, Optional[str]] = {a: get_cli_version(a) for a in self.agents}
-        self.suite = self._load_suite()
         self.skill_installer = SkillInstaller(skill_path)
+        self.skill_hash = self.skill_installer.content_hash()
+        self.skill_size = self.skill_installer.size_metrics()
+        self.suite = self._load_suite()
+        self.validation_report: EvalSuiteValidationReport
         self.workspace_mgr = WorkspaceManager(workspace_base, source_repo=source_repo)
-        self.llm_grader = LLMGrader(model=grader_model, base_url=grader_base_url) if grader_model else None
+        self.llm_grader = (
+            LLMGrader(
+                model=grader_model,
+                base_url=grader_base_url,
+                api_key_file=grader_key_file,
+                allowed_models=grader_allowed_models,
+            )
+            if grader_model
+            else None
+        )
 
         # Set when a budget violation with action=stop-suite fires; runs
         # that have not started yet short-circuit to "skipped".
@@ -106,12 +126,12 @@ class EvalRunner:
         self._progress: Optional[ProgressLog] = None
 
     def _load_suite(self) -> EvalSuite:
-        with open(self.evals_path, encoding="utf-8") as f:
-            data = json.load(f)
         # Filter once, before tasks or metadata exist, so every downstream
         # artifact (evals_meta.json, workspaces, benchmark) naturally
         # describes only the selected cases.
-        return EvalSuite(**data).filtered_by_ids(self.eval_ids)
+        suite, report = load_and_validate_suite(self.evals_path, self.eval_ids, self.side_effect_levels)
+        self.validation_report = report
+        return suite
 
     def run(self, iteration: int = 1) -> Path:
         started = time.time()
@@ -153,6 +173,8 @@ class EvalRunner:
             total_runs=len(tasks),
             eval_ids=[str(e.id) for e in self.suite.evals],
             agents=[a.value for a in self.agents],
+            skill_hash=self.skill_hash,
+            side_effect_levels=sorted({e.side_effect_level for e in self.suite.evals}),
         )
 
         results: dict[str, dict] = {}
@@ -239,12 +261,15 @@ class EvalRunner:
             run_id=self.run_id,
             agents=[a.value for a in self.agents],
             eval_ids=[str(e.id) for e in self.suite.evals],
+            side_effect_levels=sorted({e.side_effect_level for e in self.suite.evals}),
             runs=self.runs,
             with_baseline=self.with_baseline,
             duration_seconds=time.time() - started,
             results=results,
             benchmark=benchmark.model_dump(),
             cleanup=manifest.model_dump(exclude_none=True),
+            skill_hash=self.skill_hash,
+            skill_size=self.skill_size,
             budget=self.budget.model_dump() if self.budget else None,
             hooks=hook_records,
         )
@@ -268,12 +293,22 @@ class EvalRunner:
     def _save_eval_metadata(self, iteration_dir: Path) -> None:
         meta = {
             "skill_name": self.suite.skill_name,
+            "skill_hash": self.skill_hash,
+            "skill_size": self.skill_size,
             "evals": [eval_case.model_dump() for eval_case in self.suite.evals],
             "source_repo": self.source_repo,
             # The case filter actually applied (--eval-id); empty means the
             # full suite ran. report/compare readers can tell filtered runs
             # apart without diffing the evals list.
             "selected_eval_ids": self.eval_ids,
+            "selected_side_effect_levels": self.side_effect_levels,
+            "side_effect_counts": self.validation_report.side_effect_counts,
+            "grader": {
+                "model": self.grader_model,
+                "base_url": self.grader_base_url,
+                "key_file": str(self.grader_key_file) if self.grader_key_file else None,
+                "allowed_models": list(self.grader_allowed_models) if self.grader_allowed_models else None,
+            },
         }
         with open(iteration_dir / "evals_meta.json", "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
@@ -281,6 +316,7 @@ class EvalRunner:
     def _suite_hook_env(self, iteration_dir: Path, iteration: int) -> dict[str, str]:
         return {
             "ASE_SKILL_NAME": self.suite.skill_name,
+            "ASE_SKILL_HASH": self.skill_hash,
             "ASE_SKILL_DIR": str(self.skill_path),
             "ASE_EVALS_PATH": str(self.evals_path),
             "ASE_ITERATION": str(iteration),
@@ -289,24 +325,33 @@ class EvalRunner:
             "ASE_SOURCE_REPO": self.source_repo or "",
             "ASE_RUN_ID": self.run_id,
             "ASE_EVAL_IDS": ",".join(str(e.id) for e in self.suite.evals),
+            "ASE_SIDE_EFFECT_LEVELS": ",".join(sorted({e.side_effect_level for e in self.suite.evals})),
         }
 
     def _build_cleanup_manifest(self, entries: list[CleanupManifest], iteration_dir: Path) -> CleanupManifest:
         all_branches: list[str] = []
-        all_prs: list[int] = []
+        all_review_requests: list[int] = []
         for entry in entries:
             for b in entry.remote_branches:
                 if b not in all_branches:
                     all_branches.append(b)
             for p in entry.pr_numbers:
-                if p not in all_prs:
-                    all_prs.append(p)
+                if p not in all_review_requests:
+                    all_review_requests.append(p)
+            for mr in entry.merge_request_numbers:
+                if mr not in all_review_requests:
+                    all_review_requests.append(mr)
+
+        provider = repo_provider(self.source_repo)
 
         return CleanupManifest(
             source_repo=self.source_repo,
+            source_repo_provider=provider,
+            source_repo_project=repo_project_path(self.source_repo),
             source_repo_slug=github_repo_slug(self.source_repo),
             remote_branches=all_branches,
-            pr_numbers=all_prs,
+            pr_numbers=[] if provider == "gitlab" else all_review_requests,
+            merge_request_numbers=all_review_requests if provider == "gitlab" else [],
             workspaces=[str(p) for p in self.workspace_mgr.workspaces],
         )
 
@@ -348,8 +393,14 @@ class EvalRunner:
             }
 
         run_started = time.time()
+        trajectory: list[dict] = []
+
+        def record(event: str, **fields) -> None:
+            trajectory.append({"event": event, "elapsed_ms": int((time.time() - run_started) * 1000), **fields})
+
         console.print(f"  [dim]{escape(f'[{label}]')} started[/dim]")
         self._emit("run_started", **identity)
+        record("run_started", **identity, side_effect_level=eval_case.side_effect_level)
 
         eval_slug = f"eval-{eval_case.id}"
         config_slug = "with_skill" if with_skill else "without_skill"
@@ -360,19 +411,17 @@ class EvalRunner:
         output_dir = config_dir / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        fixture_files = {}
-        for file_path in eval_case.files:
-            src = self.evals_path.parent / file_path
-            if src.exists():
-                fixture_files[Path(file_path).name] = src
+        fixture_files = build_fixture_file_map(self.evals_path.parent, eval_case.files)
 
         workspace_name = f"{eval_case.id}-{agent_type.value}-{'ws' if with_skill else 'bs'}"
         if self.runs > 1:
             workspace_name += f"-r{run_index}"
         workspace = self.workspace_mgr.create_workspace(workspace_name, fixture_files)
+        record("workspace_created", path=str(workspace), fixture_count=len(fixture_files))
 
         if with_skill:
-            self.skill_installer.install(workspace, agent_type)
+            installed_to = self.skill_installer.install(workspace, agent_type)
+            record("skill_installed", path=str(installed_to), skill_hash=self.skill_hash)
 
         if eval_case.stage_files and fixture_files:
             for name in fixture_files:
@@ -382,6 +431,7 @@ class EvalRunner:
                     capture_output=True,
                     check=False,
                 )
+            record("fixtures_staged", count=len(fixture_files))
 
         model = self.agent_models.get(agent_type)
         harness = get_harness(
@@ -399,11 +449,21 @@ class EvalRunner:
 
         self._emit("snapshot_started", **identity, phase="pre")
         pre_state = capture_git_state(workspace, source_repo=self.source_repo)
+        record("git_state_captured", phase="pre", current_branch=pre_state.current_branch, head_sha=pre_state.head_sha)
         with open(output_dir / "pre_state.json", "w", encoding="utf-8") as f:
             json.dump(pre_state.model_dump(), f, indent=2)
 
         self._emit("agent_started", **identity)
+        record("agent_started", model=model)
         agent_output, timing, stdout, stderr = harness.run(prompt, output_dir)
+        record(
+            "agent_finished",
+            exit_code=timing.exit_code,
+            timed_out=timing.timed_out,
+            duration_ms=timing.duration_ms,
+            total_tokens=timing.total_tokens,
+            cost_usd=timing.cost_usd,
+        )
         self._emit(
             "agent_finished",
             **identity,
@@ -420,9 +480,17 @@ class EvalRunner:
         )
 
         budget_violations = self._check_budget(timing, label)
+        if budget_violations:
+            record("budget_exceeded", violations=budget_violations)
 
         self._emit("snapshot_started", **identity, phase="post")
         post_state = capture_git_state(workspace, source_repo=self.source_repo)
+        record(
+            "git_state_captured",
+            phase="post",
+            current_branch=post_state.current_branch,
+            head_sha=post_state.head_sha,
+        )
         with open(output_dir / "post_state.json", "w", encoding="utf-8") as f:
             json.dump(post_state.model_dump(), f, indent=2)
 
@@ -439,6 +507,8 @@ class EvalRunner:
             with_skill=with_skill,
             iteration=iteration,
             skill_name=self.suite.skill_name,
+            skill_hash=self.skill_hash,
+            side_effect_level=eval_case.side_effect_level,
             source_repo=self.source_repo,
             run_id=self.run_id,
             run_index=run_index,
@@ -465,6 +535,15 @@ class EvalRunner:
             post_state=post_state,
             should_trigger=eval_case.should_trigger,
         )
+        grading = self._apply_side_effect_contract(grading, eval_case, pre_state, post_state)
+        record(
+            "graded",
+            passed=grading.summary.passed,
+            failed=grading.summary.failed,
+            skipped=grading.summary.skipped,
+            total=grading.summary.total,
+            pass_rate=grading.summary.pass_rate,
+        )
 
         grading_path = output_dir.parent / "grading.json"
         with open(grading_path, "w", encoding="utf-8") as f:
@@ -490,19 +569,32 @@ class EvalRunner:
             grading, hook_records = apply_post_grade_hooks(self.post_grade_commands, hook_env, grading)
             with open(output_dir / "post_grade_hooks.json", "w", encoding="utf-8") as f:
                 json.dump(hook_records, f, indent=2)
+            record("post_grade_hooks_finished", count=len(hook_records))
 
         grading = self._apply_budget_verdict(grading, budget_violations)
+        if budget_violations and self.budget and self.budget.action != "warn":
+            record("budget_verdict_applied", action=self.budget.action)
 
         # Rewritten when hooks or budget added results above; cheap either way.
         with open(grading_path, "w", encoding="utf-8") as f:
             json.dump(grading.model_dump(), f, indent=2)
 
         cleanup_entry = self._build_cleanup_entry(pre_state, post_state)
+        record(
+            "cleanup_entry_built",
+            remote_branches=cleanup_entry.remote_branches,
+            pr_numbers=cleanup_entry.pr_numbers,
+        )
 
         if os.environ.get("ASE_KEEP_WORKSPACE"):
             console.print(f"  [dim]Workspace kept: {workspace}[/dim]")
+            record("workspace_kept", path=str(workspace))
         else:
             self.workspace_mgr.cleanup(workspace)
+            record("workspace_cleaned", path=str(workspace))
+
+        with open(output_dir.parent / "trajectory.json", "w", encoding="utf-8") as f:
+            json.dump(trajectory, f, indent=2)
 
         cost_str = f"{timing.cost_usd:.4f} USD" if timing.cost_usd is not None else "n/a"
         reasoning_str = (
@@ -534,6 +626,7 @@ class EvalRunner:
                 "agent": agent_type.value,
                 "with_skill": with_skill,
                 "run_index": run_index,
+                "side_effect_level": eval_case.side_effect_level,
                 "timing": timing.model_dump(),
                 "grading": grading.model_dump(),
                 "agent_output": agent_output[:2000],
@@ -583,6 +676,49 @@ class EvalRunner:
             summary=summarize_assertion_results(all_results),
         )
 
+    def _apply_side_effect_contract(
+        self,
+        grading: GradingResult,
+        eval_case: EvalCase,
+        pre_state,
+        post_state,
+    ) -> GradingResult:
+        contract = eval_case.side_effect_contract
+        if contract is None:
+            return grading
+
+        problems: list[str] = []
+        new_local = sorted(set(post_state.local_branches) - set(pre_state.local_branches))
+        new_remote = sorted(set(post_state.remote_branches) - set(pre_state.remote_branches))
+        new_commits = sorted(set(post_state.commit_shas) - set(pre_state.commit_shas))
+        pre_reviews = {item.get("number") for item in pre_state.open_prs}
+        new_reviews = sorted(
+            str(item.get("number"))
+            for item in post_state.open_prs
+            if item.get("number") is not None and item.get("number") not in pre_reviews
+        )
+        changed_files = sorted(set(post_state.changed_files))
+
+        if new_local and not contract.allow_new_local_branches:
+            problems.append("new local branches: " + ", ".join(new_local))
+        if new_remote and not contract.allow_new_remote_branches:
+            problems.append("new remote branches: " + ", ".join(new_remote))
+        if new_commits and not contract.allow_new_commits:
+            problems.append(f"new commits: {len(new_commits)}")
+        if new_reviews and not contract.allow_new_review_requests:
+            problems.append("new review requests: " + ", ".join(new_reviews))
+        if changed_files and not contract.allow_worktree_changes:
+            problems.append("worktree changes: " + ", ".join(changed_files))
+
+        result = AssertionResult(
+            text="The run respected its side-effect contract",
+            passed=not problems,
+            evidence="ok" if not problems else "; ".join(problems),
+            method="side-effect-contract",
+        )
+        all_results = list(grading.assertion_results) + [result]
+        return GradingResult(assertion_results=all_results, summary=summarize_assertion_results(all_results))
+
     def _build_prompt(self, eval_case: EvalCase, with_skill: bool) -> str:
         """Build the prompt sent to the agent.
 
@@ -624,10 +760,16 @@ class EvalRunner:
                 continue
             new_pr_numbers.append(number)
 
+        provider = repo_provider(self.source_repo)
+
         return CleanupManifest(
             source_repo=self.source_repo,
+            source_repo_provider=provider,
+            source_repo_project=repo_project_path(self.source_repo),
+            source_repo_slug=github_repo_slug(self.source_repo),
             remote_branches=new_remote_branches,
-            pr_numbers=new_pr_numbers,
+            pr_numbers=[] if provider == "gitlab" else new_pr_numbers,
+            merge_request_numbers=new_pr_numbers if provider == "gitlab" else [],
         )
 
     def _compute_benchmark(self, results: dict[str, dict], iteration_dir: Path) -> BenchmarkResult:

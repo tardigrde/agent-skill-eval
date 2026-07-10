@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+SIDE_EFFECT_LEVELS = ("static", "local-only", "live-safe", "live-external")
+SideEffectLevel = Literal["static", "local-only", "live-safe", "live-external"]
 
 
 class AgentType(str, Enum):
@@ -14,15 +17,58 @@ class AgentType(str, Enum):
     FAKE = "fake"
 
 
+class StructuredAssertion(BaseModel):
+    """A deterministic assertion with explicit fields instead of prose routing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[
+        "file_exists",
+        "file_not_exists",
+        "file_contains",
+        "file_not_contains",
+        "file_unchanged",
+        "command_ran",
+        "command_not_ran",
+        "tests_pass",
+        "git_clean",
+        "json_path",
+        "json_path_not_exists",
+    ]
+    text: Optional[str] = None
+    path: Optional[str] = None
+    contains: Optional[str] = None
+    command: Optional[str] = None
+    json_path: Optional[str] = None
+    equals: Any = None
+
+
+AssertionSpec = str | StructuredAssertion
+
+
+class SideEffectContract(BaseModel):
+    """Optional first-class side-effect allowance for an eval case."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allow_new_local_branches: bool = True
+    allow_new_remote_branches: bool = True
+    allow_new_commits: bool = True
+    allow_new_review_requests: bool = True
+    allow_worktree_changes: bool = True
+
+
 class EvalCase(BaseModel):
     id: int | str
     prompt: str
     expected_output: str
     files: list[str] = Field(default_factory=list)
-    assertions: list[str] = Field(default_factory=list)
+    assertions: list[AssertionSpec] = Field(default_factory=list)
     should_trigger: bool = True
     force_skill_invocation: bool = False
     stage_files: bool = False
+    side_effect_level: SideEffectLevel = "local-only"
+    side_effect_contract: Optional[SideEffectContract] = None
 
     @model_validator(mode="after")
     def validate_contradiction(self) -> EvalCase:
@@ -57,6 +103,24 @@ class EvalSuite(BaseModel):
         selected = [eval_case for eval_case in self.evals if str(eval_case.id) in requested_set]
         return self.model_copy(update={"evals": selected})
 
+    def filtered_by_side_effect_levels(self, side_effect_levels: Optional[list[str]] = None) -> EvalSuite:
+        """Return a copy containing only evals with one of the requested levels."""
+        if not side_effect_levels:
+            return self
+
+        requested = [str(level) for level in side_effect_levels]
+        unknown = sorted(set(requested) - set(SIDE_EFFECT_LEVELS))
+        if unknown:
+            raise ValueError(
+                "Unknown side-effect level(s): "
+                + ", ".join(unknown)
+                + ". Available levels: "
+                + ", ".join(SIDE_EFFECT_LEVELS)
+            )
+
+        selected = [eval_case for eval_case in self.evals if eval_case.side_effect_level in set(requested)]
+        return self.model_copy(update={"evals": selected})
+
 
 class GitStateSnapshot(BaseModel):
     local_branches: list[str] = Field(default_factory=list)
@@ -70,6 +134,8 @@ class GitStateSnapshot(BaseModel):
     branch_heads: dict[str, str] = Field(default_factory=dict)
     remote_branch_heads: dict[str, str] = Field(default_factory=dict)
     commit_shas: list[str] = Field(default_factory=list)
+    status_porcelain: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
 
 
 class RunMeta(BaseModel):
@@ -78,6 +144,8 @@ class RunMeta(BaseModel):
     with_skill: bool
     iteration: int = 1
     skill_name: str = ""
+    skill_hash: Optional[str] = None
+    side_effect_level: SideEffectLevel = "local-only"
     source_repo: Optional[str] = None
     run_id: str = ""
     run_index: int = 1
@@ -101,9 +169,12 @@ class RunMeta(BaseModel):
 
 class CleanupManifest(BaseModel):
     source_repo: Optional[str] = None
+    source_repo_provider: Optional[Literal["github", "gitlab"]] = None
+    source_repo_project: Optional[str] = None
     source_repo_slug: Optional[str] = None
     remote_branches: list[str] = Field(default_factory=list)
     pr_numbers: list[int] = Field(default_factory=list)
+    merge_request_numbers: list[int] = Field(default_factory=list)
     workspaces: list[str] = Field(default_factory=list)
 
 

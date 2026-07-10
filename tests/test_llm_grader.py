@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from openai import OpenAIError
 
-from agent_skill_eval.graders import LLMGrader
+from agent_skill_eval.graders import OPENWEBUI_GRADER_MODEL, LLMGrader
 
 
 class TestLLMGraderClient:
@@ -31,6 +31,36 @@ class TestLLMGraderClient:
 
         grader = LLMGrader()
         assert grader.client.api_key == "oa-key"
+
+    def test_uses_api_key_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        key_file = tmp_path / "grader.key"
+        key_file.write_text("file-key\n")
+
+        grader = LLMGrader(api_key_file=key_file)
+
+        assert grader.client.api_key == "file-key"
+        assert LLMGrader.has_credentials(key_file) is True
+
+    def test_api_key_file_does_not_fall_back_to_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+        missing_key_file = tmp_path / "missing.key"
+
+        grader = LLMGrader(api_key_file=missing_key_file)
+
+        with pytest.raises(OpenAIError, match="not readable"):
+            _ = grader.client
+        assert LLMGrader.has_credentials(missing_key_file) is False
+
+    def test_allowed_models_rejects_unlisted_model(self):
+        with pytest.raises(ValueError, match="not allowed"):
+            LLMGrader(model="other/model", allowed_models=(OPENWEBUI_GRADER_MODEL,))
+
+    def test_allowed_models_accepts_openwebui_model(self):
+        grader = LLMGrader(model=OPENWEBUI_GRADER_MODEL, allowed_models=(OPENWEBUI_GRADER_MODEL,))
+
+        assert grader.model == OPENWEBUI_GRADER_MODEL
 
     def test_custom_base_url(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "key")

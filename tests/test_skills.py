@@ -35,6 +35,21 @@ class TestSkillInstaller:
         with pytest.raises(FileNotFoundError):
             SkillInstaller(empty_dir)
 
+    def test_content_hash_changes_with_installed_content(self, skill_dir):
+        installer = SkillInstaller(skill_dir)
+        before = installer.content_hash()
+        (skill_dir / "helper.py").write_text("print('changed')")
+        after = installer.content_hash()
+        assert before != after
+
+    def test_content_hash_ignores_evals_directory(self, skill_dir):
+        installer = SkillInstaller(skill_dir)
+        before = installer.content_hash()
+        (skill_dir / "evals").mkdir()
+        (skill_dir / "evals" / "evals.json").write_text("{}")
+        after = installer.content_hash()
+        assert before == after
+
 
 class TestInstall:
     def test_installs_to_opencode(self, skill_dir, workspace):

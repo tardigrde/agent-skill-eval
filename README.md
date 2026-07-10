@@ -11,7 +11,7 @@ Because the eval goes through the full harness — system prompt, skill discover
 - **Real harnesses, end to end**: OpenCode, Claude Code, and Codex CLIs, in a single run
 - **Baseline comparison**: with-skill vs. without-skill, with a per-agent delta
 - **pass@k**: `--runs N` repeats every eval and reports full-pass rate and pass@k, because agents are stochastic and single-run numbers lie
-- **State-delta grading**: code-based checks compare pre/post git state snapshots, so they don't false-pass on pre-existing branches, commits, or PRs
+- **State-delta grading**: code-based checks compare pre/post git state snapshots, so they don't false-pass on pre-existing branches, commits, or review requests
 - **Negative controls**: `should_trigger: false` inverts assertions to catch accidental skill triggering
 - **Honest grading**: assertions the grader can't check are *skipped*, not failed; a missing API key warns upfront instead of silently zeroing your pass rate
 - **Pinned models**: `--agent-model claude-code=haiku --agent-model codex=gpt-5-mini` makes runs reproducible across machines
@@ -22,7 +22,7 @@ Because the eval goes through the full harness — system prompt, skill discover
 - **Live progress**: per-case console lines plus a tailable `progress.jsonl` — long runs are no longer opaque
 - **Lifecycle hooks**: `--pre-run-command`, `--post-grade-command`, `--post-run-command` plug external setup, side-effect graders, and teardown into the run with structured `ASE_*` metadata
 - **One-file summaries**: every run writes `summary.json` (pass rates, failures, token/cost totals, cleanup state); `agent-skill-eval status` reads it back without a model call
-- **Scoped cleanup**: only removes artifacts recorded in `cleanup.json`; never closes unrelated PRs or deletes unrelated branches
+- **Scoped cleanup**: only removes artifacts recorded in `cleanup.json`; never closes unrelated PRs/MRs or deletes unrelated branches
 - **Re-grading**: `agent-skill-eval grade` re-grades saved outputs without re-running agents
 - **Markdown reports**: paste `agent-skill-eval report --format markdown` straight into a PR or blog post
 
@@ -45,6 +45,33 @@ uv venv && uv pip install -e ".[dev]"
 ```
 
 You also need the agent CLIs you want to evaluate (`claude`, `codex`, `opencode`) installed and authenticated, and an `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM rubric grading.
+
+## Version and documentation status
+
+This README documents the source tree it lives in. If you installed
+`agent-skill-eval` from PyPI or a different Git branch, check the installed CLI
+before copying a command:
+
+```bash
+agent-skill-eval --version
+agent-skill-eval --help
+agent-skill-eval run-all --help
+```
+
+During active development, the newest CLI flags and workflow docs may exist only
+on a local feature branch until that branch is pushed and released. To use a
+local checkout explicitly, run through that checkout instead of whatever command
+is first on `PATH`:
+
+```bash
+uv run --project /path/to/skill-evals agent-skill-eval run-all --help
+uv run --project /path/to/skill-evals python -m agent_skill_eval validate-all --root .
+```
+
+When sharing results, record the command, `agent-skill-eval --version`, agent
+model, reasoning effort, and branch/commit of the harness repo. The harness also
+writes most of that to `run_meta.json` and `summary.json`, but copying it into a
+handoff or PR description makes stale-doc mismatches much easier to spot.
 
 ## Quick Start
 
@@ -70,10 +97,62 @@ agent-skill-eval report --workspace ./eval-workspace/write-release-notes-workspa
 To start a suite for your own skill:
 
 ```bash
-agent-skill-eval init my-skill
+agent-skill-eval init my-skill --template basic
 ```
 
-This scaffolds `my-skill/SKILL.md` (frontmatter template), `my-skill/evals/evals.json` (one positive case and one negative control), and `my-skill/evals/files/` for fixtures.
+This scaffolds `my-skill/SKILL.md` (frontmatter template), `my-skill/evals/evals.json`, and `my-skill/evals/files/` for fixtures. Templates are `basic`, `review-diff`, `commit-pr`, and `config-validator`; each includes a negative control and mostly deterministic assertions.
+
+## Mental model
+
+agent-skill-eval is a harness for measuring whether a skill changes real agent
+behavior. It is not a raw model benchmark and it is not a static linter for
+`SKILL.md`; it runs the same CLI a user would run, in a prepared workspace, and
+then compares what changed.
+
+The core objects are:
+
+| Term | Meaning |
+| --- | --- |
+| Skill | A directory containing `SKILL.md` and optional `references/`, `scripts/`, or other support files. This is the thing being evaluated. |
+| Eval suite | One `evals.json` file with `skill_name` and a list of cases for one skill. In plugin repos it usually lives at `plugins/<plugin>/skills/<skill>/evals/evals.json`. |
+| Eval case | One prompt plus fixtures, assertions, trigger settings, and side-effect level. A case should test one behavior or failure mode. |
+| Fixture | A file or directory copied into the agent workspace before the prompt runs. Fixtures make the workspace deterministic. |
+| Workspace | The temporary git checkout the agent sees. It is either a fresh git repo or a clone of `--source-repo`. Every case gets its own workspace so state does not leak between cases. |
+| Agent harness | The adapter that invokes `codex`, `claude`, `opencode`, or `fake` and normalizes output, logs, timing, tokens, and exit status. |
+| Configuration | A named run variant such as `with_skill` or `without_skill` for one agent/model. With `--runs N`, each configuration has repeated `run-1`, `run-2`, ... attempts. |
+| Assertion | A deterministic or LLM-graded expectation. Deterministic assertions inspect git state, files, logs, or JSON; unresolved prose goes to the LLM rubric. |
+| Grading result | The `grading.json` verdict for one run: passed, failed, skipped, evidence, and grading method per assertion. |
+| Side-effect level | A case label: `static`, `local-only`, `live-safe`, or `live-external`. It lets you run cheap or safe cases before any live provider workflow. |
+| Lifecycle hook | A shell command run before the suite, after each run is graded, or after the suite. Hooks are how provider-specific setup, external checks, and teardown are attached. |
+| Cleanup manifest | `cleanup.json`, a scoped list of branches and PRs/MRs created by the run. Cleanup only acts on this manifest. |
+| Summary/report | `summary.json`, `benchmark.json`, `status`, `report`, `report-all`, and optional JUnit/HTML/Markdown output. These are the artifacts you use for decisions. |
+
+One normal `run` flows like this:
+
+1. Load the skill and eval suite; apply filters such as `--eval-id` and
+   `--side-effect-level`.
+2. Run `--pre-run-command` hooks. These usually validate the skill text, create
+   or reset a scratch source repo, or fail fast before any agent call.
+3. For each case, create a workspace, clone `--source-repo` or initialize a
+   fresh repo, copy fixtures, and install the skill into the agent-specific
+   skill path.
+4. Capture pre-run git/provider state.
+5. Invoke the real agent CLI with the case prompt. If baseline mode is enabled,
+   run both `with_skill` and `without_skill`.
+6. Capture post-run state, logs, timing, token telemetry, and output.
+7. Grade deterministic assertions first, then send unresolved assertions to the
+   LLM grader when credentials are available.
+8. Run `--post-grade-command` hooks while the workspace still exists. These can
+   append structured assertion results for provider state that the core harness
+   cannot know about.
+9. Delete or keep workspaces according to debug settings, write summaries, and
+   run `--post-run-command` hooks for teardown and cleanup verification.
+
+Use `force_skill_invocation: true` when debugging whether the skill instructions
+are correct after the skill has already triggered. Use
+`force_skill_invocation: false` for discovery cases that prove the agent chooses
+the skill from a natural request. Use `should_trigger: false` for negative
+controls that prove the skill does not activate on adjacent read-only prompts.
 
 ## Defining evals
 
@@ -120,9 +199,12 @@ A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/eva
 | `expected_output` | str | Reference output for LLM rubric grading |
 | `files` | list[str] | Fixture file paths (resolved relative to the evals directory) |
 | `stage_files` | bool | If true, fixture files are also `git add`-ed before the agent runs (default: false) |
-| `assertions` | list[str] | Assertions to grade against |
+| `assertions` | list[str \| object] | Prose assertions or structured deterministic assertions to grade against |
 | `should_trigger` | bool | If false, branch/commit/push/PR assertions are inverted (default: true) |
 | `force_skill_invocation` | bool | If true, the prompt is prefixed with `Use the $<skill> skill.` (default: false) |
+| `side_effect_level` | str | One of `static`, `local-only`, `live-safe`, `live-external` (default: `local-only`) |
+
+Fixture paths are copied into the eval workspace before each run. Direct fixtures under `files/` are staged at the workspace root (`files/config.json` -> `config.json`). Case-scoped fixture folders also become the workspace root when a case uses one prefix (`files/prod-only/bootstrap/...` -> `bootstrap/...`), which lets suites model multi-repo workspaces without long prompt paths. If one eval references multiple case prefixes, those prefixes are preserved to avoid same-name collisions. Unsafe paths and target collisions fail during `validate`.
 
 ## How grading works
 
@@ -141,13 +223,28 @@ The deterministic grader matches assertion text against these patterns (case-ins
 | `branch` + `created`/`exists`/`new` | A new branch appeared in the state diff and is checked out |
 | `commit` + `created`/`exists`/`new` | A new commit appeared and is on the current branch |
 | `push` + `remote`/`branch`/`pushed` | The eval-created branch was pushed AND remote HEAD matches local HEAD |
-| `pr` or `pull request` | A new open PR targets the eval-created branch (corroborated by `gh pr view` when available) |
+| `pr` or `pull request` | A new open PR/MR targets the eval-created branch (corroborated by `gh pr view` for GitHub when available) |
 | `file exists` or `created` + a filename | File matching the backticked/quoted name exists in the workspace |
 | `ran` + a command name (`npm`, `git`, ...) | Command name appears in the run logs |
 | `contains` or `includes` + `"quoted"`/`` `backticked` `` text | Agent output contains the text |
 | `valid json` | Agent output (or a workspace file) parses as JSON |
 
-Anything else falls through to the LLM rubric. With `should_trigger: false`, the branch/commit/push/PR checks invert: they pass only when those artifacts did **not** appear.
+Anything else falls through to the LLM rubric. With `should_trigger: false`, the branch/commit/push/PR/MR checks invert: they pass only when those artifacts did **not** appear.
+
+### Structured deterministic assertions
+
+For checks that should never fall through to the LLM rubric, use assertion objects:
+
+```json
+{
+  "type": "file_contains",
+  "path": "README.md",
+  "contains": "Quickstart",
+  "text": "README includes a Quickstart section"
+}
+```
+
+Supported `type` values are `file_exists`, `file_not_exists`, `file_contains`, `file_not_contains`, `file_unchanged`, `command_ran`, `command_not_ran`, `tests_pass`, `git_clean`, `json_path`, and `json_path_not_exists`. Common fields are `path`, `contains`, `command`, `json_path`, `equals`, and optional human-facing `text`.
 
 ## CLI Commands
 
@@ -164,6 +261,7 @@ agent-skill-eval run \
   [--baseline/--no-baseline] [--cleanup] \
   [--timeout 600] [--retries 1] \
   [--eval-id wif-too-long-stop] \
+  [--side-effect-level static] \
   [--max-total-tokens-per-case 200000] [--budget-action fail] \
   [--pre-run-command "python scripts/setup.py"] \
   [--post-grade-command "python scripts/grade_external.py"] \
@@ -182,6 +280,7 @@ Key options:
 - `--runs, -n`: repeat each (eval, agent, config) N times; enables pass@k stats. Results land in `run-1/`, `run-2/`, ... subdirectories.
 - `--timeout` / `--retries`: per-run agent timeout (default 600s) and retries on timeout or non-zero exit (default 1). Also settable via `ASE_AGENT_TIMEOUT` / `ASE_AGENT_RETRIES`.
 - `--eval-id`: run only the named case(s); repeatable. Unknown ids fail fast with the list of available ids, before any model call. The applied filter is recorded in `evals_meta.json` (`selected_eval_ids`) and `summary.json` (`eval_ids`), and all artifacts naturally describe only the selected cases. The cheap inner loop after a small skill edit is `validate --eval-id X` then `run --eval-id X`.
+- `--side-effect-level`: run only the requested side-effect level(s); repeatable. Use this to run `static` and `local-only` checks before deliberate live-provider suites.
 - Budget guards (`--max-input-tokens-per-case`, `--max-non-cached-input-tokens-per-case`, `--max-output-tokens-per-case`, `--max-total-tokens-per-case`, `--max-reasoning-tokens-per-case`, `--max-cost-per-case`, `--max-duration-per-case`, `--budget-action warn|fail|stop-suite`): per-case limits checked after each agent run (mid-run kills remain `--timeout`'s job — budgets exist because a case can finish within the timeout and still be far too expensive). A violation is recorded in `timing.json` (`budget_exceeded`, `budget_reason`); with `fail` (the default) it also appends a failed `method: "budget"` assertion to the run's `grading.json`, and with `stop-suite` it additionally skips every run that hasn't started yet — useful to stop a live side-effect suite before more remote branches/PRs get created. `--max-cost-per-case` only fires when the run has a cost source (see Cost reporting); likewise `--max-reasoning-tokens-per-case` and `--max-non-cached-input-tokens-per-case` only fire when the run reported those values — an agent exposing less telemetry is never failed over an unknown quantity.
 - Lifecycle hooks (`--pre-run-command`, `--post-grade-command`, `--post-run-command`): see [Lifecycle hooks](#lifecycle-hooks).
 - `--pricing-config`: JSON file with USD-per-token rates for agents whose CLI reports no cost (see Cost reporting).
@@ -191,10 +290,47 @@ While the suite runs, each case prints start/finish lines (elapsed, tokens in/ca
 ### `report`
 
 ```bash
-agent-skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|markdown] [--show-evidence] [--failures-only]
+agent-skill-eval report --workspace <skill-workspace> [--iteration N] [--format table|markdown|html] [--show-evidence] [--failures-only]
 ```
 
-`--show-evidence` prints the evidence string for every failed or skipped assertion — the state diff for deterministic checks, the judge's reasoning for LLM checks. `--failures-only` limits the per-eval detail to runs that had at least one failed assertion. `--format markdown` emits a paste-ready table.
+`--show-evidence` prints the evidence string for every failed or skipped assertion — the state diff for deterministic checks, the judge's reasoning for LLM checks. `--failures-only` limits the per-eval detail to runs that had at least one failed assertion. `--format markdown` emits a paste-ready table; `--format html` emits a standalone static HTML report.
+
+### `run-all`
+
+```bash
+agent-skill-eval run-all \
+  --root path/to/plugin-repo --agent codex --side-effect-level static \
+  [--source-repo https://github.com/foo/bar.git] \
+  [--max-total-tokens-per-case 200000] [--budget-action fail] \
+  [--pre-run-command "python scripts/setup.py"] \
+  [--post-grade-command "python scripts/grade_external.py"] \
+  [--post-run-command "python scripts/teardown.py"] \
+  [--pricing-config pricing.json] \
+  [--suite-concurrency 4] \
+  [--plan-only] \
+  [--changed-only --base-ref origin/main] \
+  [--junit-xml run-all.xml] [--fail-on-assertions] [--min-pass-rate 0.8]
+```
+
+Runs every paired `SKILL.md` + `evals/evals.json` suite discovered under a repo by invoking the normal single-suite runner once per skill. Suites with no cases for the requested side-effect filter are recorded as skipped in `run-all-iteration-N.json`, which makes `static` or `local-only` repo sweeps safe before any live-provider evals.
+
+Repo sweeps accept the same source-repo, model, timeout/retry, budget, pricing, and lifecycle hook controls as `run`; the aggregate manifest records the source repo, budget, pricing config path, suite concurrency, and hook counts used for the sweep. Use `--plan-only` to validate and write the planned/skipped suite manifest without running agents, `--suite-concurrency` to run independent skill suites in parallel while preserving deterministic manifest ordering, `--changed-only --base-ref origin/main` in CI to run only skills or eval suites touched by the branch, `--junit-xml` to publish the sweep as test results, and `--fail-on-assertions` or `--min-pass-rate` to make quality gates explicit.
+
+### `report-all`
+
+```bash
+agent-skill-eval report-all --workspace ./eval-workspace [--format table|markdown|html|json] [--failures-only]
+```
+
+Summarizes a repo-level `run-all` manifest with suite status, pass rates, duration, token totals, cost totals, and failure details. Use `--format markdown` for MR notes, `--format html` for a static artifact, and `--format json` when another tool should consume the raw manifest.
+
+### `rerun-failed`
+
+```bash
+agent-skill-eval rerun-failed --from ./eval-workspace/run-all-iteration-1.json
+```
+
+Prints targeted `agent-skill-eval run --eval-id ...` commands for failed repo-sweep cases. The generated commands preserve run context recorded in the manifest, including grader settings, agent model, source repo, pricing config, timeout/retry, reasoning effort, and budget flags.
 
 ### `status`
 
@@ -218,15 +354,33 @@ Side-by-side pass rates of two iterations, per configuration, with pass-rate, ti
 agent-skill-eval validate path/to/evals.json [--eval-id <id>]
 ```
 
-Schema check plus referenced-fixture existence and duplicate-id detection. Exit code 1 on any problem (CI-friendly). `--eval-id` validates only the selected case(s) (duplicate-id detection still covers the whole file); pair it with `run --eval-id` to confirm a targeted case is well-formed before spending a model call on it.
+Schema check plus referenced-fixture existence, duplicate-id detection, and structured-assertion required-field/path checks. Exit code 1 on any problem (CI-friendly). `--eval-id` validates only the selected case(s) (duplicate-id detection still covers the whole file); pair it with `run --eval-id` to confirm a targeted case is well-formed before spending a model call on it.
+
+### `validate-all`
+
+```bash
+agent-skill-eval validate-all --root path/to/repo [--format table|json]
+```
+
+Recursively validates every discovered `*/evals/evals.json` under a repo and exits non-zero if any suite is invalid. This is the CI-friendly check for plugin repos with many skills.
+For plugin-style paths such as `plugins/<plugin>/skills/<skill>/evals/evals.json`, it also verifies the adjacent `SKILL.md` frontmatter and that the suite `skill_name` matches the skill directory.
+
+### `doctor`
+
+```bash
+agent-skill-eval doctor --skill ./skills/my-skill --evals ./evals/evals.json --agent codex
+```
+
+Preflights the local agent CLI, skill frontmatter, eval suite, LLM-grader credentials, and source-repo tooling (`gh` for GitHub, `glab` for GitLab). Use it before live or expensive suites to catch missing tools and auth early.
 
 ### `list`
 
 ```bash
-agent-skill-eval list [--root .]
+agent-skill-eval list [--root .] [--format table|json]
 ```
 
-Discovers eval suites (`evals.json`) and skills (`SKILL.md`) under a directory.
+Recursively discovers eval suites (`*/evals/evals.json`) and skills (`SKILL.md`) under a directory, including plugin-style layouts such as `plugins/<plugin>/skills/<skill>/evals/evals.json`.
+JSON output includes a `pairs` section showing paired skills, skills without evals, and external eval suites.
 
 ### `grade`
 
@@ -242,13 +396,17 @@ Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Tw
 agent-skill-eval cleanup --workspace ./eval-workspace [--yes]
 ```
 
-Only closes PRs and deletes remote branches recorded in `cleanup.json`. Never touches unrelated PRs, branches, or workspaces.
+Only closes PRs/MRs and deletes remote branches recorded in `cleanup.json`. Never touches unrelated review requests, branches, or workspaces.
 
 ### `init`
 
 ```bash
-agent-skill-eval init my-skill [--output ./examples]
+agent-skill-eval init my-skill [--output ./examples] [--template basic|review-diff|commit-pr|config-validator]
+agent-skill-eval init my-skill --layout plugin --plugin demo-plugin --output /path/to/plugin-repo
 ```
+
+Use `commit-pr` for live branch/push/PR workflows, `review-diff` for read-only review skills, and `config-validator` for skills that inspect bundled config fixtures.
+Use `--layout plugin` to scaffold directly into `plugins/<plugin>/skills/<skill>/evals` for Codex plugin repositories.
 
 ## Lifecycle hooks
 
@@ -267,6 +425,151 @@ agent-skill-eval run --skill ./skills/my-skill --evals ./evals/evals.json --agen
   --post-grade-command "python scripts/grade_remote_state.py" \
   --post-run-command "python scripts/teardown_remote.py"
 ```
+
+## Live side-effect cookbook
+
+Use this pattern for skills that create external state: pushes, PRs/MRs, Jira
+issues, cloud resources, provider API changes, tickets, comments, or anything
+that cannot be fully judged from the local workspace.
+
+### 1. Classify cases by blast radius
+
+Set `side_effect_level` on every case:
+
+| Level | Use for |
+| --- | --- |
+| `static` | Prompt-shaping, validation, "ask for missing input", and no-tool checks. No local git writes or provider calls. |
+| `local-only` | Local file edits, local git branches/commits, dry-run provider payloads, or live calls only to isolated scratch projects that are fully cleaned by hooks. |
+| `live-safe` | Live provider state in a controlled test project where setup and teardown are reliable and the effect is reversible. |
+| `live-external` | Shared, customer, production, paid, or human-visible systems. Run only with explicit intent and tight filters. |
+
+Start with `static` and `local-only`. Add `live-safe` only after the local cases
+prove the workflow shape. Treat `live-external` as a release candidate check,
+not an inner loop.
+
+### 2. Make the source repo disposable
+
+For git/MR workflows, use `--source-repo` pointing at a scratch repository that
+the eval owns. The pre-run hook should reset it to a known base state before
+each suite or case:
+
+```bash
+agent-skill-eval run \
+  --skill ./plugins/acme/skills/commit-push-mr \
+  --evals ./plugins/acme/skills/commit-push-mr/evals/evals.json \
+  --source-repo git@gitlab.example.com:me/agent-skill-eval-scratch.git \
+  --agent codex \
+  --side-effect-level local-only \
+  --eval-id wif-too-long-stop \
+  --pre-run-command "python plugins/acme/skills/commit-push-mr/evals/scripts/setup_source_repo.py" \
+  --post-grade-command "python plugins/acme/skills/commit-push-mr/evals/scripts/grade_gitlab.py" \
+  --post-run-command "python plugins/acme/skills/commit-push-mr/evals/scripts/teardown_gitlab.py" \
+  --post-run-command "python plugins/acme/skills/commit-push-mr/evals/scripts/verify_gitlab_clean.py"
+```
+
+The scratch repo should contain only eval fixtures and expected provider state.
+Do not point live evals at the real project until the suite has already passed
+against scratch state.
+
+### 3. Keep setup, grading, teardown separate
+
+Use one script for each job:
+
+- Setup hook: creates or resets scratch state, checks auth, validates that the
+  target is the expected test project, and aborts before model calls if anything
+  is unsafe.
+- Post-grade hook: reads `ASE_*` paths, inspects provider state while the agent
+  workspace still exists, and prints JSON assertion rows to stdout.
+- Teardown hook: closes/deletes only expected branches, MRs, tickets, labels, or
+  resources created by this suite.
+- Verify-clean hook: read-only proof that no expected eval branch, MR, ticket, or
+  resource remains. Run it after teardown and independently after failures.
+
+Post-grade hooks can append checks to `grading.json` by printing:
+
+```json
+[
+  {
+    "text": "Exactly one GitLab MR was opened for the eval branch",
+    "passed": true,
+    "evidence": "MR !42 targets main and source branch proj-123-eval"
+  }
+]
+```
+
+This keeps external verification in the same report as deterministic file/git
+checks and LLM rubric checks.
+
+### 4. Write cases around failure modes, not just happy paths
+
+A good side-effect suite usually has these case types:
+
+- Happy path: creates the intended branch/change/review request/resource in the
+  scratch provider.
+- Guardrail stop: invalid branch name, missing ticket ID, missing required
+  input, unsupported environment, or too-large payload stops before side
+  effects.
+- No-op stop: no meaningful local changes means no commit, push, ticket, or API
+  write.
+- Natural trigger: same workflow without `force_skill_invocation`, proving the
+  agent selects the skill from a realistic user request.
+- Negative control: adjacent read-only prompt with `should_trigger: false`,
+  proving no side effects are created.
+- Cleanup regression: provider state is clean after teardown, even when the
+  agent failed earlier.
+
+For each side effect, pair a positive assertion with an explicit "nothing else"
+check in the provider hook. For example: one MR for the eval branch, no MR for
+`main`, no duplicate MR, no unexpected branch, and no untracked provider
+resource.
+
+### 5. Use a cheap inner loop
+
+Do not make full live runs your edit loop. Use this order:
+
+```bash
+agent-skill-eval validate path/to/evals.json --eval-id wif-too-long-stop
+agent-skill-eval doctor --skill path/to/skill --evals path/to/evals.json --agent codex
+agent-skill-eval run --skill path/to/skill --evals path/to/evals.json \
+  --agent codex --eval-id wif-too-long-stop --side-effect-level local-only \
+  --no-baseline --max-total-tokens-per-case 150000 --budget-action fail
+agent-skill-eval status --workspace ./eval-workspace/<skill>-workspace
+agent-skill-eval report --workspace ./eval-workspace/<skill>-workspace --show-evidence
+```
+
+Only after a targeted case passes should you run more cases, more agents,
+baseline mode, or `run-all`.
+
+For plugin repos with many skills, use planning before execution:
+
+```bash
+agent-skill-eval validate-all --root /path/to/plugin-repo --strict
+agent-skill-eval run-all --root /path/to/plugin-repo \
+  --side-effect-level static --changed-only --base-ref origin/main --plan-only
+agent-skill-eval run-all --root /path/to/plugin-repo \
+  --side-effect-level local-only --changed-only --base-ref origin/main \
+  --suite-concurrency 2 --fail-on-assertions
+```
+
+### 6. Use budgets and cleanup as gates
+
+Side-effect suites need explicit failure gates:
+
+- Set `--timeout`, `--retries`, `--max-total-tokens-per-case`,
+  `--max-duration-per-case`, and usually `--budget-action fail` or
+  `stop-suite`.
+- Use `--eval-id` while debugging a single risky case.
+- Keep `--cleanup` or teardown hooks enabled for any run that can push, open an
+  MR, or write provider state.
+- Run a read-only verify-clean command after failures before starting another
+  live run.
+- Archive or paste `status`, `report --show-evidence`, and provider hook
+  evidence when claiming a skill improved.
+
+The minimum credible claim for a side-effect skill is: targeted case passed,
+provider hook passed, cleanup verification passed, and the command/model/harness
+version are recorded. A stronger claim adds repeated runs, natural trigger and
+negative-control cases, and a before/after comparison with `compare`.
 
 ## Example skills
 
@@ -290,7 +593,7 @@ Each has a matching eval suite under [`examples/`](examples/). `skills/` holds t
 eval-workspace/
 └── <skill>-workspace/
     └── iteration-1/
-        ├── evals_meta.json          # eval definitions + selected_eval_ids (used by `grade`)
+        ├── evals_meta.json          # eval definitions, selected filters, skill_hash (used by `grade`)
         ├── cleanup.json             # manifest of artifacts created by this run
         ├── benchmark.json           # aggregate stats per (agent, config)
         ├── summary.json             # one-file run summary (used by `status`)
@@ -304,7 +607,8 @@ eval-workspace/
             │   └── pre_state.json / post_state.json
             ├── timing.json          # tokens (incl. non-cached/reasoning splits), duration, exit_code, timed_out, retries, budget verdict
             ├── grading.json         # per-assertion results
-            └── run_meta.json        # agent, with_skill, run_index, model, reasoning_effort, base_url, agent_cli_version, harness_version, ...
+            ├── trajectory.json      # normalized lifecycle events for this run
+            └── run_meta.json        # agent, with_skill, run_index, model, side_effect_level, skill_hash, CLI/harness versions, ...
 ```
 
 ### grading.json

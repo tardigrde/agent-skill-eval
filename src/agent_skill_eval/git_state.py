@@ -40,6 +40,56 @@ def github_repo_slug(source_repo: Optional[str]) -> Optional[str]:
     return _slug_from_repo_path(repo)
 
 
+def repo_provider(source_repo: Optional[str]) -> Optional[str]:
+    host = _repo_host(source_repo)
+    if host == "github.com":
+        return "github"
+    if host and "gitlab" in host:
+        return "gitlab"
+    return None
+
+
+def repo_project_path(source_repo: Optional[str]) -> Optional[str]:
+    if not source_repo:
+        return None
+    repo = source_repo.strip().rstrip("/")
+    if not repo:
+        return None
+    if "://" not in repo and ":" in repo:
+        _host_part, path = repo.split(":", 1)
+        return _project_path_from_repo_path(path)
+
+    parsed = urlparse(repo)
+    if parsed.netloc:
+        return _project_path_from_repo_path(parsed.path)
+
+    if repo.lower().startswith("github.com/"):
+        return _project_path_from_repo_path(repo[len("github.com/") :])
+    if repo.lower().startswith("gitlab.com/"):
+        return _project_path_from_repo_path(repo[len("gitlab.com/") :])
+
+    return _project_path_from_repo_path(repo)
+
+
+def _repo_host(source_repo: Optional[str]) -> Optional[str]:
+    if not source_repo:
+        return None
+    repo = source_repo.strip().rstrip("/")
+    if not repo:
+        return None
+    if "://" not in repo and ":" in repo:
+        host_part, _path = repo.split(":", 1)
+        return host_part.split("@")[-1].lower()
+    parsed = urlparse(repo)
+    if parsed.hostname:
+        return parsed.hostname.lower()
+    if repo.lower().startswith("github.com/"):
+        return "github.com"
+    if repo.lower().startswith("gitlab.com/"):
+        return "gitlab.com"
+    return None
+
+
 def _slug_from_repo_path(path: str) -> Optional[str]:
     clean = path.split("?", 1)[0].split("#", 1)[0].strip("/").removesuffix(".git")
     parts = [part for part in clean.split("/") if part]
@@ -48,12 +98,20 @@ def _slug_from_repo_path(path: str) -> Optional[str]:
     return f"{parts[0]}/{parts[1]}"
 
 
+def _project_path_from_repo_path(path: str) -> Optional[str]:
+    clean = path.split("?", 1)[0].split("#", 1)[0].strip("/").removesuffix(".git")
+    parts = [part for part in clean.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return "/".join(parts)
+
+
 def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> GitStateSnapshot:
-    """Snapshot the git and PR state of a workspace.
+    """Snapshot the git and review-request state of a workspace.
 
     Captures branches, current HEAD, commit count, recent commits, full SHAs
     for branch heads, remote branch heads, and (if a source repo is
-    configured) the list of PRs currently open on the remote.
+    configured) the list of PRs/MRs currently known on the remote.
     """
     raw_branches = _run(["git", "branch", "-a"], workspace).strip().split("\n")
     local_branches: set[str] = set()
@@ -101,11 +159,14 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
 
     remotes_raw = _run(["git", "remote", "-v"], workspace).strip()
     remote_names = sorted({line.split()[0] for line in remotes_raw.split("\n") if line.strip()})
+    status_lines = [line for line in _run(["git", "status", "--porcelain"], workspace).splitlines() if line.strip()]
+    changed_files = sorted({line[3:].strip() for line in status_lines if len(line) >= 4 and line[3:].strip()})
 
     open_prs: list[dict] = []
     if source_repo:
+        provider = repo_provider(source_repo)
         slug = github_repo_slug(source_repo)
-        if slug:
+        if slug and provider in (None, "github"):
             prs_raw = _run(
                 [
                     "gh",
@@ -125,6 +186,14 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
                     open_prs = json.loads(prs_raw)
                 except json.JSONDecodeError:
                     open_prs = []
+        elif provider == "gitlab":
+            project = repo_project_path(source_repo)
+            if project:
+                mrs_raw = _run(
+                    ["glab", "mr", "list", "-R", project, "--all", "--output", "json"],
+                    Path.cwd(),
+                )
+                open_prs = _normalize_gitlab_merge_requests(mrs_raw)
 
     return GitStateSnapshot(
         local_branches=sorted(local_branches),
@@ -138,7 +207,60 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
         branch_heads=branch_heads,
         remote_branch_heads=remote_branch_heads,
         commit_shas=commit_shas[:50],
+        status_porcelain=status_lines,
+        changed_files=changed_files,
     )
+
+
+def _normalize_gitlab_merge_requests(raw: str) -> list[dict]:
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+    if isinstance(data, dict):
+        values = data.get("merge_requests") or data.get("mergeRequests") or data.get("data") or []
+    else:
+        values = data
+    if not isinstance(values, list):
+        return []
+
+    out: list[dict] = []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        number = _optional_int(item.get("iid") or item.get("number"))
+        out.append(
+            {
+                "number": number,
+                "headRefName": item.get("source_branch") or item.get("sourceBranch") or item.get("headRefName"),
+                "baseRefName": item.get("target_branch") or item.get("targetBranch") or item.get("baseRefName"),
+                "url": item.get("web_url") or item.get("webUrl") or item.get("url"),
+                "state": _normalize_gitlab_state(item.get("state")),
+            }
+        )
+    return out
+
+
+def _normalize_gitlab_state(state: object) -> str:
+    raw = str(state or "opened").upper()
+    if raw in {"OPEN", "OPENED"}:
+        return "OPEN"
+    if raw == "MERGED":
+        return "MERGED"
+    if raw in {"CLOSE", "CLOSED"}:
+        return "CLOSED"
+    return raw
+
+
+def _optional_int(value: object) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
 
 
 def _parse_for_each_ref(raw: str) -> list[tuple[str, str]]:
