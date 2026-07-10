@@ -6,6 +6,38 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.7.0 (2026-07-10)
+
+### Features
+
+- Run-all multi-suite harness, validation, and reporting suite
+  ([`a282bc9`](https://github.com/tardigrde/agent-skill-eval/commit/a282bc9e6d13b0cc4ffa3bb0dec2e02c695313d5))
+
+Comprehensive update folding together the run-all multi-suite layer, static validation, expanded
+  reporting, and side-effect contract enforcement.
+
+Run-all / multi-suite: - concurrent eval-suite execution with paired skill<->suite discovery -
+  recursive eval discovery, changed-only mode, plugin eval layout - dry-run planning without agent
+  calls, planned-case preview, plan totals - cost/duration totals, pass-rate gating, JUnit reports -
+  failed-case rerun commands with context preservation - artifact archive + cross-run compare
+
+Validation & assertions: - strict eval-suite linting and structured-field validation - negative
+  artifact assertions, command-assertion false-positive fix - run-all assertion-failure reporting
+
+Grading: - constrained OpenWebUI grader backend (localhost default)
+
+Side effects & reporting: - enforced side-effect contracts, GitLab cleanup manifests - static HTML
+  reports, skill portfolio report - skill-hash + run-trajectory recording - doctor command, JSON
+  discovery output
+
+New modules: fixtures.py, validation.py.
+
+Corporate-specific fixtures removed; tool is fully generic. Default LLM grader backend is OpenRouter
+  (public).
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+
+
 ## v0.6.1 (2026-06-12)
 
 ### Bug Fixes
