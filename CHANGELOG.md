@@ -6,6 +6,48 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.8.0 (2026-11-14)
+
+### Bug Fixes
+
+- **doctor**: Warn instead of fail on frontmatter name mismatch
+  ([`cf51aaa`](https://github.com/tardigrde/agent-skill-eval/commit/cf51aaab8c0ed0343eca5804005767338bebc41a))
+
+- **graders**: Match command_ran against structured tool-call events
+  ([`bda8e8a`](https://github.com/tardigrde/agent-skill-eval/commit/bda8e8a3f9e3aaa54cd8ccc72b329945bf708a0a))
+
+- **harnesses**: Strip terminal escapes before parsing OpenCode JSONL
+  ([`b03c6df`](https://github.com/tardigrde/agent-skill-eval/commit/b03c6dfd161860267d61246f3f09c2a819186f8c))
+
+- **skills**: Install Codex skills in .agents/skills
+  ([`acebb60`](https://github.com/tardigrde/agent-skill-eval/commit/acebb6069461a07ed38a3b25549fbdaa43a4fc53))
+
+- **trigger-rate**: A failed skill call is not an invocation
+  ([`d0c8d7b`](https://github.com/tardigrde/agent-skill-eval/commit/d0c8d7b74ce4611bc4bb70c1f56d10f378345ed8))
+
+In the no-skill arm OpenCode can guess a skill name; the call fails with status=error ('Unable to
+  load skill pdf') and was counted as invoked.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **workspace**: Commit fixtures and installed skill into the baseline
+  ([`e874b67`](https://github.com/tardigrde/agent-skill-eval/commit/e874b67e23382f689a7dd0db4f3d3e7315e6825a))
+
+### Features
+
+- **opencode**: Support the OpenCode V2 CLI
+  ([`0d5cb9f`](https://github.com/tardigrde/agent-skill-eval/commit/0d5cb9fe88ae0596b4e48e13a925de77b83cef2f))
+
+V2 has no --dir and no --dangerously-skip-permissions. With V2 the harness relies on the process
+  cwd, uses --auto, and adds --standalone so parallel runs do not share the background service. The
+  version is read once from 'opencode --version'; unknown versions keep the V1 command.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+- **summary**: Record and aggregate the skill trigger rate per config
+  ([`76aad6e`](https://github.com/tardigrde/agent-skill-eval/commit/76aad6e156498f8a498ffabd5c157656e012216f))
+
+
 ## Unreleased
 
 ### Features
