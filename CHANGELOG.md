@@ -10,6 +10,13 @@ from conventional commits; entries below it are curated by hand.
 
 ### Bug Fixes
 
+- **graders:** match `command_ran` against structured tool-call events
+
+  `command_ran` searched raw logs that also contain the echoed skill text and
+  agent prose, so a command mentioned in instructions could count as executed.
+  It now reads command/tool-call events from Codex and OpenCode JSON logs and
+  only falls back to raw-log matching with an explicit low-confidence note.
+
 - **workspace:** commit fixtures and the installed skill into the baseline
 
   Fixtures used to be copied after the initial commit, so they stayed untracked

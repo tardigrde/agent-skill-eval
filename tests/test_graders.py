@@ -142,6 +142,76 @@ class TestCheckCommandRan:
         assert not result.passed
         assert "docker" not in result.evidence.lower() or "not found" in result.evidence.lower()
 
+    def test_fallback_marks_raw_log_match_as_low_confidence(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("Running git commit...")
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert result.passed
+        assert "low confidence" in result.evidence
+
+    def test_ignores_echoed_skill_text_when_tool_events_exist(self, grader, tmp_path):
+        """Prose in the agent log must not count as a command that ran."""
+        (tmp_path / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "text",
+                    "part": {"text": "The skill instructions say to run `git commit -m done` when ready."},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": {"command": "ls -la"}},
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert not result.passed
+        assert "not found in structured command logs" in result.evidence
+
+    def test_matches_opencode_tool_command(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": {"command": "git status --short"}},
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert result.passed
+        assert "structured command log" in result.evidence
+
+    def test_structured_command_ran_uses_opencode_tool_events(self, tmp_path):
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "bash", "state": {"input": {"command": "terraform plan"}}},
+                }
+            )
+            + "\n"
+        )
+        grading = grade_assertions(
+            [StructuredAssertion(type="command_ran", command="terraform plan")],
+            agent_output="",
+            output_dir=output_dir,
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert "structured command log" in grading.assertion_results[0].evidence
+
 
 class TestCheckGitBranch:
     def test_passes_when_new_branch_appeared_in_state(self, grader, git_workspace):
