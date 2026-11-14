@@ -264,6 +264,33 @@ class TestDetectSkillInvocation:
         assert invoked is True
         assert "skill" in evidence
 
+    def test_opencode_failed_skill_call_is_not_an_invocation(self, tmp_path):
+        # The no-skill arm can guess a skill name; the call then fails.
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "skill",
+                    "state": {"status": "error", "input": {"id": "demo"}, "error": "Unable to load skill demo"},
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is False
+        assert "none invoked" in evidence
+
+    def test_opencode_completed_skill_call_counts(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {"tool": "skill", "state": {"status": "completed", "input": {"id": "demo"}}},
+            }
+        )
+        invoked, _ = detect_skill_invocation(AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)])
+        assert invoked is True
+
     def test_opencode_read_of_skill_md(self, tmp_path):
         stdout = json.dumps(
             {

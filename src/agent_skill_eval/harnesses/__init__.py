@@ -101,6 +101,11 @@ def detect_skill_invocation(
             if event.get("type") not in {"tool_use", "tool"} and part.get("type") not in {"tool", "tool_use"}:
                 continue
             saw_tool_event = True
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            if str(state.get("status", "")).lower() in {"error", "failed"} or state.get("error"):
+                # A failed call (for example "Unable to load skill pdf" in the
+                # no-skill arm) did not load anything.
+                continue
             tool = str(part.get("tool") or part.get("tool_name") or part.get("name") or event.get("tool") or "")
             tool_input = part.get("input", event.get("input"))
             if tool_input is None and isinstance(part.get("state"), dict):
