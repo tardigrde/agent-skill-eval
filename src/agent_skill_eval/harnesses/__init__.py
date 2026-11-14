@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -13,6 +14,28 @@ from agent_skill_eval.models import AgentType, TimingData
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 2.0
+
+# Terminal escape sequences an agent CLI may print on the same line as a JSON
+# event: OSC (window title, e.g. ``\x1b]0;title\x07``), CSI (colors/cursor),
+# and the two-character escapes. Codex/OpenCode emit these when stdout is a
+# TTY-like pipe on some terminals, which used to make json.loads drop the line.
+_TERMINAL_ESCAPE_RE = re.compile(
+    r"""
+    \x1b
+    (?:
+        \[[0-?]*[ -/]*[@-~]        # CSI ... final byte
+      | \][^\x07\x1b]*(?:\x07|\x1b\\)  # OSC ... BEL or ST
+      | [PX^_][^\x1b]*(?:\x1b\\)   # DCS/SOS/PM/APC ... ST
+      | [@-_]                      # Fe two-character escape
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_terminal_escapes(text: str) -> str:
+    """Remove ANSI CSI/OSC escape sequences from a log line."""
+    return _TERMINAL_ESCAPE_RE.sub("", text)
 
 
 def _rate(entry: dict, field: str) -> float:
@@ -262,6 +285,9 @@ class OpenCodeHarness(AgentHarness):
         cost: Optional[float] = None
 
         for line in stdout.strip().split("\n"):
+            # A line may start with OSC/ANSI escapes printed by the terminal
+            # before the JSON event; strip them so json.loads sees the event.
+            line = strip_terminal_escapes(line)
             if not line.strip():
                 continue
             try:
@@ -408,6 +434,7 @@ class CodexHarness(AgentHarness):
         messages = []
 
         for line in stdout.strip().split("\n"):
+            line = strip_terminal_escapes(line)
             if not line.strip():
                 continue
             try:

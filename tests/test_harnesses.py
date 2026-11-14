@@ -60,6 +60,26 @@ class TestOpenCodeHarnessParseOutput:
         output, timing = harness.parse_output(stdout, "")
         assert "valid" in output
 
+    def test_strips_terminal_escapes_before_json(self, tmp_path):
+        # Real opencode runs on some terminals prefix the JSON event with an
+        # OSC window-title sequence and ANSI color codes on the same line.
+        harness = OpenCodeHarness(tmp_path)
+        event = json.dumps({"type": "text", "part": {"text": "Hello after escapes"}})
+        line = "\x1b]0;opencode - running task\x07\x1b[32m" + event + "\x1b[0m"
+        output, timing = harness.parse_output(line, "")
+        assert output == "Hello after escapes"
+
+    def test_strips_ansi_split_across_events(self, tmp_path):
+        harness = OpenCodeHarness(tmp_path)
+        events = [
+            "\x1b]0;title\x1b\\" + json.dumps({"type": "text", "part": {"text": "First"}}),
+            "\x1b[1;31m" + json.dumps({"type": "step_finish", "part": {"tokens": {"input": 7, "output": 3}}}),
+        ]
+        output, timing = harness.parse_output("\n".join(events), "")
+        assert output == "First"
+        assert timing.input_tokens == 7
+        assert timing.output_tokens == 3
+
 
 class TestOpenCodeHarnessBuildCommand:
     def test_pins_invocation(self, tmp_path):

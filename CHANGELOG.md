@@ -10,6 +10,12 @@ from conventional commits; entries below it are curated by hand.
 
 ### Bug Fixes
 
+- **harnesses:** strip terminal escape sequences before parsing OpenCode JSONL
+
+  OpenCode can write OSC window-title sequences and ANSI CSI codes on the same
+  line as a JSON event. `json.loads` then raised and the parser dropped the
+  line, losing text and token usage. Escapes are now removed before parsing.
+
 - **skills:** install Codex repository skills in `.agents/skills`
 
   Codex discovers repository skills under `.agents/skills` (see the official Codex
