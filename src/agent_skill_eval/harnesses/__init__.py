@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -366,15 +367,23 @@ class OpenCodeHarness(AgentHarness):
     version_command = ["opencode", "--version"]
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
-        cmd = [
-            "opencode",
-            "run",
-            "--dir",
-            str(self.workspace),
-            "--format",
-            "json",
-            "--dangerously-skip-permissions",
-        ]
+        if opencode_major_version() >= 2:
+            # OpenCode V2 has no --dir (the process cwd is already the
+            # workspace) and no --dangerously-skip-permissions (--auto
+            # approves everything not explicitly denied). --standalone gives
+            # each run a private server instead of the shared background
+            # service, so parallel runs do not share state.
+            cmd = ["opencode", "run", "--standalone", "--format", "json", "--auto"]
+        else:
+            cmd = [
+                "opencode",
+                "run",
+                "--dir",
+                str(self.workspace),
+                "--format",
+                "json",
+                "--dangerously-skip-permissions",
+            ]
         if self.model:
             cmd.extend(["--model", self.model])
         cmd.append(prompt)
@@ -644,6 +653,17 @@ def get_harness(
         pricing=pricing,
         reasoning_effort=reasoning_effort,
     )
+
+
+@functools.lru_cache(maxsize=1)
+def opencode_major_version() -> int:
+    """Major version of the installed OpenCode CLI; 1 when unknown.
+
+    ``opencode --version`` prints ``1.x.y`` (V1) or ``opencode v2.x.y`` (V2).
+    """
+    version = get_cli_version(AgentType.OPENCODE) or ""
+    match = re.search(r"(\d+)\.\d+", version)
+    return int(match.group(1)) if match else 1
 
 
 def get_cli_version(agent_type: AgentType) -> Optional[str]:

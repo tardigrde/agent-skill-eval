@@ -89,7 +89,11 @@ class TestOpenCodeHarnessParseOutput:
 
 
 class TestOpenCodeHarnessBuildCommand:
-    def test_pins_invocation(self, tmp_path):
+    def test_pins_invocation(self, tmp_path, monkeypatch):
+        # Pinned V1 invocation; V2 is covered by TestOpenCodeCommandVersions.
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "opencode_major_version", lambda: 1)
         harness = OpenCodeHarness(tmp_path)
         cmd = harness.build_command("fix it", tmp_path)
         assert cmd == [
@@ -342,3 +346,43 @@ class TestDetectSkillInvocation:
         assert invoked is True
         invoked, _ = detect_skill_invocation(AgentType.FAKE, "", "", "demo", [])
         assert invoked is False
+
+
+class TestOpenCodeCommandVersions:
+    """OpenCode V1 and V2 take different flags for the same run."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_version_cache(self):
+        from agent_skill_eval import harnesses
+
+        harnesses.opencode_major_version.cache_clear()
+        yield
+        harnesses.opencode_major_version.cache_clear()
+
+    def test_v1_uses_dir_and_skip_permissions(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: "1.19.5")
+        cmd = OpenCodeHarness(tmp_path, model="opencode-go/m").build_command("hi", tmp_path)
+        assert cmd[:2] == ["opencode", "run"]
+        assert "--dir" in cmd and str(tmp_path) in cmd
+        assert "--dangerously-skip-permissions" in cmd
+        assert cmd[-1] == "hi"
+
+    def test_v2_uses_auto_standalone_and_no_dir(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: "opencode v2.2.6")
+        cmd = OpenCodeHarness(tmp_path, model="opencode-go/m").build_command("hi", tmp_path)
+        assert "--dir" not in cmd
+        assert "--dangerously-skip-permissions" not in cmd
+        assert "--auto" in cmd and "--standalone" in cmd
+        assert cmd[cmd.index("--format") + 1] == "json"
+        assert cmd[cmd.index("--model") + 1] == "opencode-go/m"
+        assert cmd[-1] == "hi"
+
+    def test_unknown_version_falls_back_to_v1(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: None)
+        assert harnesses.opencode_major_version() == 1
