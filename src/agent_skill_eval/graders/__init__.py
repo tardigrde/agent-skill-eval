@@ -1247,7 +1247,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
 
     # Skill-install and VCS dirs: listing them would leak the skill text into
     # the judge's context and drown out the agent's actual artifacts.
-    _EXCLUDED_DIRS = (".git", ".claude", ".opencode", ".codex", ".fake")
+    _EXCLUDED_DIRS = (".git", ".claude", ".opencode", ".codex", ".agents", ".fake")
 
     def _workspace_files(self, workspace: Path) -> list[Path]:
         files = []

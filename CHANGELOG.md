@@ -6,6 +6,17 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## Unreleased
+
+### Bug Fixes
+
+- **skills:** install Codex repository skills in `.agents/skills`
+
+  Codex discovers repository skills under `.agents/skills` (see the official Codex
+  skills documentation), so evaluations installed the skill where Codex never
+  looked. The installer now uses `.agents/skills` as the primary target and keeps
+  mirroring into `.codex/skills` for older Codex builds.
+
 ## v0.7.0 (2026-07-10)
 
 ### Features

@@ -679,7 +679,7 @@ How to read it: the **delta rows** are the skill's measured value per agent — 
 | --- | --- | --- |
 | OpenCode | `opencode run --format json --dangerously-skip-permissions` | `.opencode/skills/<name>/SKILL.md` |
 | Claude Code | `claude -p --output-format json --dangerously-skip-permissions` | `.claude/skills/<name>/SKILL.md` |
-| Codex | `codex exec --json --sandbox workspace-write --skip-git-repo-check` | `.codex/skills/<name>/SKILL.md` |
+| Codex | `codex exec --json --sandbox workspace-write --skip-git-repo-check` | `.agents/skills/<name>/SKILL.md` (also mirrored to `.codex/skills` for older builds) |
 
 ### Cost reporting
 

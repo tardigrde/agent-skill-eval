@@ -67,8 +67,17 @@ class TestInstall:
     def test_installs_to_codex(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         result = installer.install(workspace, AgentType.CODEX)
-        assert result == workspace / ".codex" / "skills" / "my-skill"
+        # Codex discovers repo skills in .agents/skills (primary target).
+        assert result == workspace / ".agents" / "skills" / "my-skill"
+        assert (workspace / ".agents" / "skills" / "my-skill" / "SKILL.md").exists()
+        # Older Codex builds also scan .codex/skills; keep that copy too.
         assert (workspace / ".codex" / "skills" / "my-skill" / "SKILL.md").exists()
+
+    def test_install_targets_lists_primary_first(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        targets = installer.install_targets(workspace, AgentType.CODEX)
+        assert targets[0] == workspace / ".agents" / "skills" / "my-skill"
+        assert targets[1] == workspace / ".codex" / "skills" / "my-skill"
 
     def test_installs_to_fake(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
@@ -100,6 +109,13 @@ class TestUninstall:
     def test_no_error_if_not_installed(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         installer.uninstall(workspace, AgentType.OPENCODE)
+
+    def test_removes_codex_install_from_all_targets(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        installer.install(workspace, AgentType.CODEX)
+        installer.uninstall(workspace, AgentType.CODEX)
+        assert not (workspace / ".agents" / "skills" / "my-skill").exists()
+        assert not (workspace / ".codex" / "skills" / "my-skill").exists()
 
     def test_removes_empty_parent_directory(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)

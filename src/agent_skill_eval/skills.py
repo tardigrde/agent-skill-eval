@@ -12,7 +12,10 @@ from agent_skill_eval.models import AgentType
 SKILL_PATHS = {
     AgentType.OPENCODE: [".opencode/skills"],
     AgentType.CLAUDE_CODE: [".claude/skills"],
-    AgentType.CODEX: [".codex/skills"],
+    # Codex discovers repository skills in ``.agents/skills`` (the first
+    # entry, used as the primary install target). Older Codex builds also
+    # scanned ``.codex/skills``; keep writing there for compatibility.
+    AgentType.CODEX: [".agents/skills", ".codex/skills"],
     AgentType.FAKE: [".fake/skills"],
 }
 
@@ -119,12 +122,14 @@ class SkillInstaller:
             files.append(path)
         return files
 
+    def install_targets(self, workspace: Path, agent_type: AgentType) -> list[Path]:
+        """Directories this install would write, primary target first."""
+        return [workspace / target_dir / self.skill_name for target_dir in SKILL_PATHS[agent_type]]
+
     def install(self, workspace: Path, agent_type: AgentType) -> Path:
-        target_dirs = SKILL_PATHS[agent_type]
         installed_to = None
 
-        for target_dir in target_dirs:
-            dest_base = workspace / target_dir / self.skill_name
+        for dest_base in self.install_targets(workspace, agent_type):
             dest_base.mkdir(parents=True, exist_ok=True)
 
             shutil.copy2(self.skill_md, dest_base / "SKILL.md")
@@ -137,7 +142,8 @@ class SkillInstaller:
                 elif item.is_dir() and item.name not in ("evals", "__pycache__", ".git"):
                     shutil.copytree(item, dest_base / item.name, dirs_exist_ok=True)
 
-            installed_to = dest_base
+            if installed_to is None:
+                installed_to = dest_base
 
         if installed_to is None:
             raise ValueError(f"No skill paths configured for {agent_type}")
