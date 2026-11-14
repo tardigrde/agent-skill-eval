@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from agent_skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
+from agent_skill_eval.harnesses import (
+    ClaudeCodeHarness,
+    CodexHarness,
+    FakeHarness,
+    OpenCodeHarness,
+    detect_skill_invocation,
+)
+from agent_skill_eval.models import AgentType
 
 
 class TestOpenCodeHarnessParseOutput:
@@ -239,3 +246,99 @@ class TestFakeHarness:
         assert stdout == output
         assert stderr == ""
         assert timing.total_tokens == 1
+
+
+class TestDetectSkillInvocation:
+    def _opencode_path(self, tmp_path):
+        return tmp_path / ".opencode" / "skills" / "demo"
+
+    def test_opencode_skill_tool_invocation(self, tmp_path):
+        stdout = json.dumps({"type": "tool_use", "part": {"tool": "skill", "state": {"input": {"name": "demo"}}}})
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is True
+        assert "skill" in evidence
+
+    def test_opencode_read_of_skill_md(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "read",
+                    "state": {"input": {"filePath": ".opencode/skills/demo/SKILL.md"}},
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is True
+        assert "SKILL.md" in evidence
+
+    def test_opencode_tool_events_without_skill_are_false(self, tmp_path):
+        stdout = json.dumps({"type": "tool_use", "part": {"tool": "bash", "state": {"input": {"command": "ls"}}}})
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is False
+        assert "none invoked" in evidence
+
+    def test_opencode_without_tool_events_is_unknown(self, tmp_path):
+        stdout = json.dumps({"type": "text", "part": {"text": "done"}})
+        invoked, _ = detect_skill_invocation(AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)])
+        assert invoked is None
+
+    def test_codex_command_read_of_skill_md(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "cat .agents/skills/demo/SKILL.md",
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.CODEX, stdout, "", "demo", [tmp_path / ".agents" / "skills" / "demo"]
+        )
+        assert invoked is True
+        assert "SKILL.md" in evidence
+
+    def test_codex_without_skill_event_is_unknown(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": "pytest -q"},
+            }
+        )
+        invoked, _ = detect_skill_invocation(
+            AgentType.CODEX, stdout, "", "demo", [tmp_path / ".agents" / "skills" / "demo"]
+        )
+        assert invoked is None
+
+    def test_claude_code_path_in_logs_is_true(self, tmp_path):
+        invoked, _ = detect_skill_invocation(
+            AgentType.CLAUDE_CODE,
+            "",
+            "Read .claude/skills/demo/SKILL.md",
+            "demo",
+            [tmp_path / ".claude" / "skills" / "demo"],
+        )
+        assert invoked is True
+
+    def test_claude_code_without_path_is_unknown(self, tmp_path):
+        invoked, _ = detect_skill_invocation(
+            AgentType.CLAUDE_CODE,
+            json.dumps({"result": "done"}),
+            "",
+            "demo",
+            [tmp_path / ".claude" / "skills" / "demo"],
+        )
+        assert invoked is None
+
+    def test_fake_harness_reports_installed_skill_use(self, tmp_path):
+        invoked, _ = detect_skill_invocation(AgentType.FAKE, "", "", "demo", [tmp_path / ".fake" / "skills" / "demo"])
+        assert invoked is True
+        invoked, _ = detect_skill_invocation(AgentType.FAKE, "", "", "demo", [])
+        assert invoked is False

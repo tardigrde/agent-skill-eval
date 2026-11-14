@@ -8,6 +8,17 @@ from conventional commits; entries below it are curated by hand.
 
 ## Unreleased
 
+### Features
+
+- **summary:** record and aggregate the skill trigger rate per config
+
+  Each run now stores `skill_invoked` and `skill_invocation_evidence` in
+  `run_meta.json`. `summary.json` aggregates them under `trigger_rate`, keyed
+  by config (for example `opencode_with_skill`). Detection uses OpenCode
+  `tool_use` events (the `skill` tool or a read of the installed `SKILL.md`)
+  and Codex command events. Runs whose harness exposes too little telemetry
+  are counted as `unknown`, never as "did not trigger".
+
 ### Bug Fixes
 
 - **graders:** match `command_ran` against structured tool-call events

@@ -340,6 +340,8 @@ agent-skill-eval status --workspace <skill-workspace> [--iteration N]
 
 Answers "what happened in the last run?" without a model call: pass rates per configuration, failed/skipped/errored runs, token totals with the cached share, total cost (or `unavailable`), budget violations, hook outcomes, and whether `cleanup.json` recorded remote side effects. Reads the iteration's `summary.json`; for runs that predate it, a reduced summary is rebuilt from the saved artifacts.
 
+`summary.json` also reports `trigger_rate` per configuration: whether the skill was actually loaded, based on OpenCode `tool_use` events (the `skill` tool or a read of the installed `SKILL.md`) and Codex command events. Runs where the harness exposes too little telemetry are counted as `unknown` and are excluded from the rate denominator — unknown is never treated as "did not trigger". Each run records `skill_invoked` and `skill_invocation_evidence` in `run_meta.json`.
+
 ### `compare`
 
 ```bash

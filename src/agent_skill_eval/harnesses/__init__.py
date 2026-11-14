@@ -38,6 +38,116 @@ def strip_terminal_escapes(text: str) -> str:
     return _TERMINAL_ESCAPE_RE.sub("", text)
 
 
+def _iter_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _iter_strings(item)]
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _iter_strings(item)]
+    return []
+
+
+def _skill_markers(skill_name: str, installed_paths: list[Path]) -> tuple[str, ...]:
+    markers = {f"{skill_name}/SKILL.md"}
+    for path in installed_paths:
+        markers.add(path.as_posix())
+        # Logs may print the path relative to the workspace.
+        parts = path.parts
+        if "skills" in parts:
+            index = parts.index("skills")
+            if index > 0 and index + 1 < len(parts):
+                markers.add("/".join(parts[index - 1 :]))
+    return tuple(marker.lower() for marker in markers)
+
+
+def _mentions_skill(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = text.lower().replace("\\", "/")
+    return any(marker in lowered for marker in markers)
+
+
+def detect_skill_invocation(
+    agent_type: AgentType,
+    stdout: str,
+    stderr: str,
+    skill_name: str,
+    installed_paths: list[Path],
+) -> tuple[Optional[bool], str]:
+    """Whether the agent actually loaded/invoked the installed skill.
+
+    Returns ``(True, evidence)`` when a read or skill tool call for the
+    installed SKILL.md is visible, ``(False, evidence)`` only when the log
+    format proves no invocation happened, and ``(None, evidence)`` when the
+    agent exposes too little telemetry (unknown must not count as false).
+    """
+    markers = _skill_markers(skill_name, installed_paths)
+
+    if agent_type == AgentType.FAKE:
+        if installed_paths:
+            return True, "fake harness simulates skill use when the skill is installed"
+        return False, "fake harness has no installed skill"
+
+    if agent_type == AgentType.OPENCODE:
+        saw_tool_event = False
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(strip_terminal_escapes(line))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            part = event.get("part") if isinstance(event.get("part"), dict) else {}
+            if event.get("type") not in {"tool_use", "tool"} and part.get("type") not in {"tool", "tool_use"}:
+                continue
+            saw_tool_event = True
+            tool = str(part.get("tool") or part.get("tool_name") or part.get("name") or event.get("tool") or "")
+            tool_input = part.get("input", event.get("input"))
+            if tool_input is None and isinstance(part.get("state"), dict):
+                tool_input = part["state"].get("input")
+            strings = _iter_strings(tool_input)
+            if tool.lower() == "skill":
+                if not strings or any(skill_name.lower() in text.lower() for text in strings):
+                    return True, f"opencode tool 'skill' invoked {skill_name}"
+            if any(_mentions_skill(text, markers) for text in strings):
+                return True, "opencode read the installed SKILL.md"
+        if saw_tool_event:
+            return False, "opencode tool events present, but none invoked the skill"
+        return None, "opencode log has no structured tool events"
+
+    if agent_type == AgentType.CODEX:
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(strip_terminal_escapes(line))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            for obj in (event, item):
+                if obj.get("type") == "command_execution":
+                    command = str(obj.get("command") or "")
+                    if _mentions_skill(command, markers):
+                        return True, "codex command read the installed SKILL.md"
+                if obj.get("type") in {"tool_call", "mcp_tool_call", "function_call"}:
+                    name = str(obj.get("tool_name") or obj.get("name") or "")
+                    arguments = obj.get("arguments") or obj.get("input") or {}
+                    if name.lower() == "skill" and (
+                        not arguments or any(skill_name.lower() in text.lower() for text in _iter_strings(arguments))
+                    ):
+                        return True, f"codex tool 'skill' invoked {skill_name}"
+                if obj.get("type") in {"file_read", "read_file"}:
+                    if any(_mentions_skill(text, markers) for text in _iter_strings(obj)):
+                        return True, "codex read the installed SKILL.md"
+        return None, "codex log has no structured skill-read event"
+
+    if agent_type == AgentType.CLAUDE_CODE:
+        if _mentions_skill(stdout + "\n" + stderr, markers):
+            return True, "installed SKILL.md path appears in claude-code logs"
+        return None, "claude-code JSON output exposes no tool-call events"
+
+    return None, "skill invocation detection is unavailable for this harness"
+
+
 def _rate(entry: dict, field: str) -> float:
     try:
         return float(entry.get(field) or 0.0)
