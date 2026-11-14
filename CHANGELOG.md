@@ -21,6 +21,12 @@ from conventional commits; entries below it are curated by hand.
 
 ### Bug Fixes
 
+- **doctor:** warn, do not fail, when the frontmatter name differs from the directory
+
+  A skill whose `SKILL.md` declares a `name` different from its directory name
+  is still usable. `doctor` now reports it as a warning instead of a failure;
+  missing `name`/`description` fields remain blocking problems.
+
 - **graders:** match `command_ran` against structured tool-call events
 
   `command_ran` searched raw logs that also contain the echoed skill text and

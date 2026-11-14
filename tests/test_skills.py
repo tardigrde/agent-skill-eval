@@ -133,3 +133,24 @@ class TestUninstall:
         installer.uninstall(workspace, AgentType.OPENCODE)
         assert parent_dir.exists()
         assert (parent_dir / "other-file.txt").exists()
+
+
+class TestFrontmatterSeverity:
+    def test_name_mismatch_is_a_warning_not_a_problem(self, tmp_path):
+        skill = tmp_path / "dir-name"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: other-name\ndescription: Test skill\n---\nbody")
+        installer = SkillInstaller(skill)
+        assert installer.frontmatter_problems() == []
+        warnings = installer.frontmatter_warnings()
+        assert len(warnings) == 1
+        assert "other-name" in warnings[0]
+        assert "dir-name" in warnings[0]
+
+    def test_missing_name_stays_a_problem(self, tmp_path):
+        skill = tmp_path / "demo"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\ndescription: Test skill\n---\nbody")
+        installer = SkillInstaller(skill)
+        assert any("missing 'name'" in problem for problem in installer.frontmatter_problems())
+        assert installer.frontmatter_warnings() == []

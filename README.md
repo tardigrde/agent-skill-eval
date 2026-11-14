@@ -373,7 +373,7 @@ For plugin-style paths such as `plugins/<plugin>/skills/<skill>/evals/evals.json
 agent-skill-eval doctor --skill ./skills/my-skill --evals ./evals/evals.json --agent codex
 ```
 
-Preflights the local agent CLI, skill frontmatter, eval suite, LLM-grader credentials, and source-repo tooling (`gh` for GitHub, `glab` for GitLab). Use it before live or expensive suites to catch missing tools and auth early.
+Preflights the local agent CLI, skill frontmatter, eval suite, LLM-grader credentials, and source-repo tooling (`gh` for GitHub, `glab` for GitLab). Use it before live or expensive suites to catch missing tools and auth early. Missing `name`/`description` frontmatter fields are failures; a frontmatter `name` that differs from the skill directory name is only a warning.
 
 ### `list`
 

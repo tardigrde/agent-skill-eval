@@ -419,8 +419,11 @@ def run(
     from agent_skill_eval.skills import SkillInstaller
 
     try:
-        for problem in SkillInstaller(skill).frontmatter_problems():
+        installer = SkillInstaller(skill)
+        for problem in installer.frontmatter_problems():
             console.print(f"[yellow]Warning: {problem}[/yellow]")
+        for warning in installer.frontmatter_warnings():
+            console.print(f"[yellow]Warning: {warning}[/yellow]")
     except FileNotFoundError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
@@ -1102,8 +1105,11 @@ def doctor(
 
             installer = SkillInstaller(skill)
             problems = installer.frontmatter_problems()
+            skill_warnings = installer.frontmatter_warnings()
             if problems:
                 add_check("skill", "fail", "; ".join(problems))
+            elif skill_warnings:
+                add_check("skill", "warn", "; ".join(skill_warnings))
             else:
                 add_check("skill", "ok", str(skill))
         except FileNotFoundError as e:
