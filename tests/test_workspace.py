@@ -39,6 +39,38 @@ class TestCreateWorkspace:
         assert (ws / "fixture.txt").exists()
         assert (ws / "fixture.txt").read_text() == "test content"
 
+    def test_fixture_files_are_in_the_baseline_commit(self, manager, tmp_path):
+        """Fixtures must be tracked, or file_unchanged/git_clean see them as agent edits."""
+        fixture = tmp_path / "fixture.txt"
+        fixture.write_text("test content")
+        ws = manager.create_workspace("test-ws", {"fixture.txt": fixture})
+
+        tracked = subprocess.run(["git", "ls-files"], cwd=ws, capture_output=True, text=True, check=True)
+        assert "fixture.txt" in tracked.stdout.splitlines()
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=ws, capture_output=True, text=True, check=True)
+        assert status.stdout.strip() == ""
+
+    def test_fixture_directories_are_tracked(self, manager, tmp_path):
+        fixture_dir = tmp_path / "files"
+        fixture_dir.mkdir()
+        (fixture_dir / "input.json").write_text("{}")
+        ws = manager.create_workspace("test-ws", {"files": fixture_dir})
+        tracked = subprocess.run(["git", "ls-files"], cwd=ws, capture_output=True, text=True, check=True)
+        assert "files/input.json" in tracked.stdout.splitlines()
+
+    def test_committed_skill_paths_do_not_dirty_the_workspace(self, manager, tmp_path):
+        """The installed skill is harness input, not an agent change."""
+        ws = manager.create_workspace("test-ws")
+        skill_dir = ws / ".fake" / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\nname: demo\ndescription: d\n---\nbody")
+        committed = manager.commit_paths(ws, [skill_dir], "Install skill demo")
+        assert committed
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=ws, capture_output=True, text=True, check=True)
+        assert status.stdout.strip() == ""
+        again = manager.commit_paths(ws, [skill_dir], "Install skill demo")
+        assert not again
+
     def test_replaces_existing_workspace(self, manager):
         ws1 = manager.create_workspace("test-ws")
         (ws1 / "marker.txt").write_text("old")
@@ -115,3 +147,25 @@ class TestCloneRepo:
             check=True,
         )
         assert name_res.stdout.strip() == "Skill Eval"
+
+    def test_clone_repo_commits_fixtures(self, tmp_path):
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "src@test.com"], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Source"], cwd=source_dir, capture_output=True, check=True)
+        (source_dir / "readme.md").write_text("Hello source")
+        subprocess.run(["git", "add", "."], cwd=source_dir, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial source commit"], cwd=source_dir, capture_output=True, check=True
+        )
+
+        fixture = tmp_path / "fixture.txt"
+        fixture.write_text("test content")
+        manager = WorkspaceManager(base_dir=tmp_path / "workspaces", source_repo=str(source_dir))
+        ws = manager.create_workspace("cloned-ws", {"fixture.txt": fixture})
+
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=ws, capture_output=True, text=True, check=True)
+        assert status.stdout.strip() == ""
+        tracked = subprocess.run(["git", "ls-files"], cwd=ws, capture_output=True, text=True, check=True)
+        assert "fixture.txt" in tracked.stdout.splitlines()

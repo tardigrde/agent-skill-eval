@@ -421,7 +421,20 @@ class EvalRunner:
 
         if with_skill:
             installed_to = self.skill_installer.install(workspace, agent_type)
-            record("skill_installed", path=str(installed_to), skill_hash=self.skill_hash)
+            # The skill is eval input, not an agent edit: commit it into the
+            # baseline so git_clean, file_unchanged and side-effect contracts
+            # only see changes the agent actually made.
+            committed = self.workspace_mgr.commit_paths(
+                workspace,
+                self.skill_installer.install_targets(workspace, agent_type),
+                f"Install skill {self.suite.skill_name}",
+            )
+            record(
+                "skill_installed",
+                path=str(installed_to),
+                skill_hash=self.skill_hash,
+                baseline_commit=committed,
+            )
 
         if eval_case.stage_files and fixture_files:
             for name in fixture_files:

@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from agent_skill_eval.graders import DeterministicGrader, grade_assertions
 from agent_skill_eval.models import GitStateSnapshot, StructuredAssertion
 
@@ -14,6 +16,45 @@ def _snapshot(ws: Path) -> GitStateSnapshot:
     from agent_skill_eval.git_state import capture_git_state
 
     return capture_git_state(ws)
+
+
+class TestBaselineFixtures:
+    """Eval fixtures must not look like agent edits just because they are copied in."""
+
+    @pytest.fixture
+    def fixture_workspace(self, tmp_path):
+        from agent_skill_eval.workspace import WorkspaceManager
+
+        fixture = tmp_path / "fixture.txt"
+        fixture.write_text("input data")
+        manager = WorkspaceManager(base_dir=tmp_path / "ws")
+        return manager.create_workspace("eval", {"fixture.txt": fixture})
+
+    def test_file_unchanged_passes_for_baseline_fixture(self, fixture_workspace, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="file_unchanged", path="fixture.txt")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=fixture_workspace,
+            pre_state=_snapshot(fixture_workspace),
+            post_state=_snapshot(fixture_workspace),
+        )
+        assert grading.summary.passed == 1
+        assert "No change detected" in grading.assertion_results[0].evidence
+
+    def test_git_clean_passes_with_baseline_fixture(self, fixture_workspace, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="git_clean")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=fixture_workspace,
+        )
+        assert grading.summary.passed == 1
+
+    def test_fixture_creates_no_changed_files_in_snapshot(self, fixture_workspace):
+        assert _snapshot(fixture_workspace).changed_files == []
 
 
 class TestCheckContentContains:

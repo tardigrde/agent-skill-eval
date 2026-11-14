@@ -198,7 +198,7 @@ A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/eva
 | `prompt` | str | Prompt sent to the agent verbatim |
 | `expected_output` | str | Reference output for LLM rubric grading |
 | `files` | list[str] | Fixture file paths (resolved relative to the evals directory) |
-| `stage_files` | bool | If true, fixture files are also `git add`-ed before the agent runs (default: false) |
+| `stage_files` | bool | Deprecated compatibility flag: fixtures are always committed into the workspace baseline before the agent runs, so this no longer changes behavior |
 | `assertions` | list[str \| object] | Prose assertions or structured deterministic assertions to grade against |
 | `should_trigger` | bool | If false, branch/commit/push/PR assertions are inverted (default: true) |
 | `force_skill_invocation` | bool | If true, the prompt is prefixed with `Use the $<skill> skill.` (default: false) |

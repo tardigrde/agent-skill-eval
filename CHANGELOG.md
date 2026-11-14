@@ -10,6 +10,15 @@ from conventional commits; entries below it are curated by hand.
 
 ### Bug Fixes
 
+- **workspace:** commit fixtures and the installed skill into the baseline
+
+  Fixtures used to be copied after the initial commit, so they stayed untracked
+  and `file_unchanged`, `git_clean`, and `side_effect_contract` with
+  `allow_worktree_changes: false` reported the eval's own inputs as agent edits.
+  Fixtures are now part of the baseline commit, and the installed skill is
+  committed too (it is harness input, not an agent change). With-skill and
+  without-skill workspaces therefore share the same fixture baseline.
+
 - **harnesses:** strip terminal escape sequences before parsing OpenCode JSONL
 
   OpenCode can write OSC window-title sequences and ANSI CSI codes on the same
