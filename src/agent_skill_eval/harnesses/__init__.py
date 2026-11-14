@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import functools
 import json
 import os
+import re
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -13,6 +15,143 @@ from agent_skill_eval.models import AgentType, TimingData
 DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MAX_RETRIES = 1
 RETRY_BACKOFF_SECONDS = 2.0
+
+# Terminal escape sequences an agent CLI may print on the same line as a JSON
+# event: OSC (window title, e.g. ``\x1b]0;title\x07``), CSI (colors/cursor),
+# and the two-character escapes. Codex/OpenCode emit these when stdout is a
+# TTY-like pipe on some terminals, which used to make json.loads drop the line.
+_TERMINAL_ESCAPE_RE = re.compile(
+    r"""
+    \x1b
+    (?:
+        \[[0-?]*[ -/]*[@-~]        # CSI ... final byte
+      | \][^\x07\x1b]*(?:\x07|\x1b\\)  # OSC ... BEL or ST
+      | [PX^_][^\x1b]*(?:\x1b\\)   # DCS/SOS/PM/APC ... ST
+      | [@-_]                      # Fe two-character escape
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def strip_terminal_escapes(text: str) -> str:
+    """Remove ANSI CSI/OSC escape sequences from a log line."""
+    return _TERMINAL_ESCAPE_RE.sub("", text)
+
+
+def _iter_strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _iter_strings(item)]
+    if isinstance(value, (list, tuple)):
+        return [text for item in value for text in _iter_strings(item)]
+    return []
+
+
+def _skill_markers(skill_name: str, installed_paths: list[Path]) -> tuple[str, ...]:
+    markers = {f"{skill_name}/SKILL.md"}
+    for path in installed_paths:
+        markers.add(path.as_posix())
+        # Logs may print the path relative to the workspace.
+        parts = path.parts
+        if "skills" in parts:
+            index = parts.index("skills")
+            if index > 0 and index + 1 < len(parts):
+                markers.add("/".join(parts[index - 1 :]))
+    return tuple(marker.lower() for marker in markers)
+
+
+def _mentions_skill(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = text.lower().replace("\\", "/")
+    return any(marker in lowered for marker in markers)
+
+
+def detect_skill_invocation(
+    agent_type: AgentType,
+    stdout: str,
+    stderr: str,
+    skill_name: str,
+    installed_paths: list[Path],
+) -> tuple[Optional[bool], str]:
+    """Whether the agent actually loaded/invoked the installed skill.
+
+    Returns ``(True, evidence)`` when a read or skill tool call for the
+    installed SKILL.md is visible, ``(False, evidence)`` only when the log
+    format proves no invocation happened, and ``(None, evidence)`` when the
+    agent exposes too little telemetry (unknown must not count as false).
+    """
+    markers = _skill_markers(skill_name, installed_paths)
+
+    if agent_type == AgentType.FAKE:
+        if installed_paths:
+            return True, "fake harness simulates skill use when the skill is installed"
+        return False, "fake harness has no installed skill"
+
+    if agent_type == AgentType.OPENCODE:
+        saw_tool_event = False
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(strip_terminal_escapes(line))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            part = event.get("part") if isinstance(event.get("part"), dict) else {}
+            if event.get("type") not in {"tool_use", "tool"} and part.get("type") not in {"tool", "tool_use"}:
+                continue
+            saw_tool_event = True
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            if str(state.get("status", "")).lower() in {"error", "failed"} or state.get("error"):
+                # A failed call (for example "Unable to load skill pdf" in the
+                # no-skill arm) did not load anything.
+                continue
+            tool = str(part.get("tool") or part.get("tool_name") or part.get("name") or event.get("tool") or "")
+            tool_input = part.get("input", event.get("input"))
+            if tool_input is None and isinstance(part.get("state"), dict):
+                tool_input = part["state"].get("input")
+            strings = _iter_strings(tool_input)
+            if tool.lower() == "skill":
+                if not strings or any(skill_name.lower() in text.lower() for text in strings):
+                    return True, f"opencode tool 'skill' invoked {skill_name}"
+            if any(_mentions_skill(text, markers) for text in strings):
+                return True, "opencode read the installed SKILL.md"
+        if saw_tool_event:
+            return False, "opencode tool events present, but none invoked the skill"
+        return None, "opencode log has no structured tool events"
+
+    if agent_type == AgentType.CODEX:
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(strip_terminal_escapes(line))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            for obj in (event, item):
+                if obj.get("type") == "command_execution":
+                    command = str(obj.get("command") or "")
+                    if _mentions_skill(command, markers):
+                        return True, "codex command read the installed SKILL.md"
+                if obj.get("type") in {"tool_call", "mcp_tool_call", "function_call"}:
+                    name = str(obj.get("tool_name") or obj.get("name") or "")
+                    arguments = obj.get("arguments") or obj.get("input") or {}
+                    if name.lower() == "skill" and (
+                        not arguments or any(skill_name.lower() in text.lower() for text in _iter_strings(arguments))
+                    ):
+                        return True, f"codex tool 'skill' invoked {skill_name}"
+                if obj.get("type") in {"file_read", "read_file"}:
+                    if any(_mentions_skill(text, markers) for text in _iter_strings(obj)):
+                        return True, "codex read the installed SKILL.md"
+        return None, "codex log has no structured skill-read event"
+
+    if agent_type == AgentType.CLAUDE_CODE:
+        if _mentions_skill(stdout + "\n" + stderr, markers):
+            return True, "installed SKILL.md path appears in claude-code logs"
+        return None, "claude-code JSON output exposes no tool-call events"
+
+    return None, "skill invocation detection is unavailable for this harness"
 
 
 def _rate(entry: dict, field: str) -> float:
@@ -233,15 +372,23 @@ class OpenCodeHarness(AgentHarness):
     version_command = ["opencode", "--version"]
 
     def build_command(self, prompt: str, output_dir: Path) -> list[str]:
-        cmd = [
-            "opencode",
-            "run",
-            "--dir",
-            str(self.workspace),
-            "--format",
-            "json",
-            "--dangerously-skip-permissions",
-        ]
+        if opencode_major_version() >= 2:
+            # OpenCode V2 has no --dir (the process cwd is already the
+            # workspace) and no --dangerously-skip-permissions (--auto
+            # approves everything not explicitly denied). --standalone gives
+            # each run a private server instead of the shared background
+            # service, so parallel runs do not share state.
+            cmd = ["opencode", "run", "--standalone", "--format", "json", "--auto"]
+        else:
+            cmd = [
+                "opencode",
+                "run",
+                "--dir",
+                str(self.workspace),
+                "--format",
+                "json",
+                "--dangerously-skip-permissions",
+            ]
         if self.model:
             cmd.extend(["--model", self.model])
         cmd.append(prompt)
@@ -262,6 +409,9 @@ class OpenCodeHarness(AgentHarness):
         cost: Optional[float] = None
 
         for line in stdout.strip().split("\n"):
+            # A line may start with OSC/ANSI escapes printed by the terminal
+            # before the JSON event; strip them so json.loads sees the event.
+            line = strip_terminal_escapes(line)
             if not line.strip():
                 continue
             try:
@@ -408,6 +558,7 @@ class CodexHarness(AgentHarness):
         messages = []
 
         for line in stdout.strip().split("\n"):
+            line = strip_terminal_escapes(line)
             if not line.strip():
                 continue
             try:
@@ -507,6 +658,17 @@ def get_harness(
         pricing=pricing,
         reasoning_effort=reasoning_effort,
     )
+
+
+@functools.lru_cache(maxsize=1)
+def opencode_major_version() -> int:
+    """Major version of the installed OpenCode CLI; 1 when unknown.
+
+    ``opencode --version`` prints ``1.x.y`` (V1) or ``opencode v2.x.y`` (V2).
+    """
+    version = get_cli_version(AgentType.OPENCODE) or ""
+    match = re.search(r"(\d+)\.\d+", version)
+    return int(match.group(1)) if match else 1
 
 
 def get_cli_version(agent_type: AgentType) -> Optional[str]:

@@ -19,7 +19,7 @@ from agent_skill_eval import __version__
 from agent_skill_eval.fixtures import build_fixture_file_map
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider
 from agent_skill_eval.graders import DEFAULT_GRADER_MODEL, LLMGrader, grade_assertions, summarize_assertion_results
-from agent_skill_eval.harnesses import HARNESSES, get_cli_version, get_harness
+from agent_skill_eval.harnesses import HARNESSES, detect_skill_invocation, get_cli_version, get_harness
 from agent_skill_eval.hooks import apply_post_grade_hooks, run_suite_hooks
 from agent_skill_eval.models import (
     AgentType,
@@ -421,7 +421,20 @@ class EvalRunner:
 
         if with_skill:
             installed_to = self.skill_installer.install(workspace, agent_type)
-            record("skill_installed", path=str(installed_to), skill_hash=self.skill_hash)
+            # The skill is eval input, not an agent edit: commit it into the
+            # baseline so git_clean, file_unchanged and side-effect contracts
+            # only see changes the agent actually made.
+            committed = self.workspace_mgr.commit_paths(
+                workspace,
+                self.skill_installer.install_targets(workspace, agent_type),
+                f"Install skill {self.suite.skill_name}",
+            )
+            record(
+                "skill_installed",
+                path=str(installed_to),
+                skill_hash=self.skill_hash,
+                baseline_commit=committed,
+            )
 
         if eval_case.stage_files and fixture_files:
             for name in fixture_files:
@@ -456,6 +469,10 @@ class EvalRunner:
         self._emit("agent_started", **identity)
         record("agent_started", model=model)
         agent_output, timing, stdout, stderr = harness.run(prompt, output_dir)
+        installed_paths = self.skill_installer.install_targets(workspace, agent_type) if with_skill else []
+        skill_invoked, skill_invocation_evidence = detect_skill_invocation(
+            agent_type, stdout, stderr, self.suite.skill_name, installed_paths
+        )
         record(
             "agent_finished",
             exit_code=timing.exit_code,
@@ -463,6 +480,11 @@ class EvalRunner:
             duration_ms=timing.duration_ms,
             total_tokens=timing.total_tokens,
             cost_usd=timing.cost_usd,
+        )
+        record(
+            "skill_invocation_checked",
+            invoked=skill_invoked,
+            evidence=skill_invocation_evidence,
         )
         self._emit(
             "agent_finished",
@@ -519,6 +541,8 @@ class EvalRunner:
             base_url=self.harness_base_url,
             harness_version=__version__,
             agent_cli_version=self._cli_versions.get(agent_type),
+            skill_invoked=skill_invoked,
+            skill_invocation_evidence=skill_invocation_evidence,
         )
         meta_path = output_dir.parent / "run_meta.json"
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -630,6 +654,8 @@ class EvalRunner:
                 "timing": timing.model_dump(),
                 "grading": grading.model_dump(),
                 "agent_output": agent_output[:2000],
+                "skill_invoked": skill_invoked,
+                "skill_invocation_evidence": skill_invocation_evidence,
             },
             "cleanup_entry": cleanup_entry,
         }

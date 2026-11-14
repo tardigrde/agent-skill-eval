@@ -832,6 +832,20 @@ class TestSkillEvalCliSmoke:
         assert result.exit_code == 0, result.output
         assert "Doctor checks passed" in result.output
 
+    def test_doctor_warns_on_frontmatter_name_mismatch(self, tmp_path):
+        skill = tmp_path / "dir-name"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: other-name\ndescription: A test skill\n---\nbody")
+
+        result = CliRunner().invoke(
+            app,
+            ["doctor", "--skill", str(skill), "--agent", "fake", "--grader-model", ""],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "other-name" in result.output
+        assert "Doctor found 2 warning(s)" in result.output
+
     def test_doctor_fails_for_invalid_suite(self, tmp_path):
         runner = CliRunner()
         skill = FIXTURES / "skills" / "format-json"

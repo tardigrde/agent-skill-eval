@@ -4,7 +4,14 @@ import json
 
 import pytest
 
-from agent_skill_eval.harnesses import ClaudeCodeHarness, CodexHarness, FakeHarness, OpenCodeHarness
+from agent_skill_eval.harnesses import (
+    ClaudeCodeHarness,
+    CodexHarness,
+    FakeHarness,
+    OpenCodeHarness,
+    detect_skill_invocation,
+)
+from agent_skill_eval.models import AgentType
 
 
 class TestOpenCodeHarnessParseOutput:
@@ -60,9 +67,33 @@ class TestOpenCodeHarnessParseOutput:
         output, timing = harness.parse_output(stdout, "")
         assert "valid" in output
 
+    def test_strips_terminal_escapes_before_json(self, tmp_path):
+        # Real opencode runs on some terminals prefix the JSON event with an
+        # OSC window-title sequence and ANSI color codes on the same line.
+        harness = OpenCodeHarness(tmp_path)
+        event = json.dumps({"type": "text", "part": {"text": "Hello after escapes"}})
+        line = "\x1b]0;opencode - running task\x07\x1b[32m" + event + "\x1b[0m"
+        output, timing = harness.parse_output(line, "")
+        assert output == "Hello after escapes"
+
+    def test_strips_ansi_split_across_events(self, tmp_path):
+        harness = OpenCodeHarness(tmp_path)
+        events = [
+            "\x1b]0;title\x1b\\" + json.dumps({"type": "text", "part": {"text": "First"}}),
+            "\x1b[1;31m" + json.dumps({"type": "step_finish", "part": {"tokens": {"input": 7, "output": 3}}}),
+        ]
+        output, timing = harness.parse_output("\n".join(events), "")
+        assert output == "First"
+        assert timing.input_tokens == 7
+        assert timing.output_tokens == 3
+
 
 class TestOpenCodeHarnessBuildCommand:
-    def test_pins_invocation(self, tmp_path):
+    def test_pins_invocation(self, tmp_path, monkeypatch):
+        # Pinned V1 invocation; V2 is covered by TestOpenCodeCommandVersions.
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "opencode_major_version", lambda: 1)
         harness = OpenCodeHarness(tmp_path)
         cmd = harness.build_command("fix it", tmp_path)
         assert cmd == [
@@ -219,3 +250,166 @@ class TestFakeHarness:
         assert stdout == output
         assert stderr == ""
         assert timing.total_tokens == 1
+
+
+class TestDetectSkillInvocation:
+    def _opencode_path(self, tmp_path):
+        return tmp_path / ".opencode" / "skills" / "demo"
+
+    def test_opencode_skill_tool_invocation(self, tmp_path):
+        stdout = json.dumps({"type": "tool_use", "part": {"tool": "skill", "state": {"input": {"name": "demo"}}}})
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is True
+        assert "skill" in evidence
+
+    def test_opencode_failed_skill_call_is_not_an_invocation(self, tmp_path):
+        # The no-skill arm can guess a skill name; the call then fails.
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "skill",
+                    "state": {"status": "error", "input": {"id": "demo"}, "error": "Unable to load skill demo"},
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is False
+        assert "none invoked" in evidence
+
+    def test_opencode_completed_skill_call_counts(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {"tool": "skill", "state": {"status": "completed", "input": {"id": "demo"}}},
+            }
+        )
+        invoked, _ = detect_skill_invocation(AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)])
+        assert invoked is True
+
+    def test_opencode_read_of_skill_md(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "tool_use",
+                "part": {
+                    "tool": "read",
+                    "state": {"input": {"filePath": ".opencode/skills/demo/SKILL.md"}},
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is True
+        assert "SKILL.md" in evidence
+
+    def test_opencode_tool_events_without_skill_are_false(self, tmp_path):
+        stdout = json.dumps({"type": "tool_use", "part": {"tool": "bash", "state": {"input": {"command": "ls"}}}})
+        invoked, evidence = detect_skill_invocation(
+            AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)]
+        )
+        assert invoked is False
+        assert "none invoked" in evidence
+
+    def test_opencode_without_tool_events_is_unknown(self, tmp_path):
+        stdout = json.dumps({"type": "text", "part": {"text": "done"}})
+        invoked, _ = detect_skill_invocation(AgentType.OPENCODE, stdout, "", "demo", [self._opencode_path(tmp_path)])
+        assert invoked is None
+
+    def test_codex_command_read_of_skill_md(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "cat .agents/skills/demo/SKILL.md",
+                },
+            }
+        )
+        invoked, evidence = detect_skill_invocation(
+            AgentType.CODEX, stdout, "", "demo", [tmp_path / ".agents" / "skills" / "demo"]
+        )
+        assert invoked is True
+        assert "SKILL.md" in evidence
+
+    def test_codex_without_skill_event_is_unknown(self, tmp_path):
+        stdout = json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "command_execution", "command": "pytest -q"},
+            }
+        )
+        invoked, _ = detect_skill_invocation(
+            AgentType.CODEX, stdout, "", "demo", [tmp_path / ".agents" / "skills" / "demo"]
+        )
+        assert invoked is None
+
+    def test_claude_code_path_in_logs_is_true(self, tmp_path):
+        invoked, _ = detect_skill_invocation(
+            AgentType.CLAUDE_CODE,
+            "",
+            "Read .claude/skills/demo/SKILL.md",
+            "demo",
+            [tmp_path / ".claude" / "skills" / "demo"],
+        )
+        assert invoked is True
+
+    def test_claude_code_without_path_is_unknown(self, tmp_path):
+        invoked, _ = detect_skill_invocation(
+            AgentType.CLAUDE_CODE,
+            json.dumps({"result": "done"}),
+            "",
+            "demo",
+            [tmp_path / ".claude" / "skills" / "demo"],
+        )
+        assert invoked is None
+
+    def test_fake_harness_reports_installed_skill_use(self, tmp_path):
+        invoked, _ = detect_skill_invocation(AgentType.FAKE, "", "", "demo", [tmp_path / ".fake" / "skills" / "demo"])
+        assert invoked is True
+        invoked, _ = detect_skill_invocation(AgentType.FAKE, "", "", "demo", [])
+        assert invoked is False
+
+
+class TestOpenCodeCommandVersions:
+    """OpenCode V1 and V2 take different flags for the same run."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_version_cache(self):
+        from agent_skill_eval import harnesses
+
+        harnesses.opencode_major_version.cache_clear()
+        yield
+        harnesses.opencode_major_version.cache_clear()
+
+    def test_v1_uses_dir_and_skip_permissions(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: "1.19.5")
+        cmd = OpenCodeHarness(tmp_path, model="opencode-go/m").build_command("hi", tmp_path)
+        assert cmd[:2] == ["opencode", "run"]
+        assert "--dir" in cmd and str(tmp_path) in cmd
+        assert "--dangerously-skip-permissions" in cmd
+        assert cmd[-1] == "hi"
+
+    def test_v2_uses_auto_standalone_and_no_dir(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: "opencode v2.2.6")
+        cmd = OpenCodeHarness(tmp_path, model="opencode-go/m").build_command("hi", tmp_path)
+        assert "--dir" not in cmd
+        assert "--dangerously-skip-permissions" not in cmd
+        assert "--auto" in cmd and "--standalone" in cmd
+        assert cmd[cmd.index("--format") + 1] == "json"
+        assert cmd[cmd.index("--model") + 1] == "opencode-go/m"
+        assert cmd[-1] == "hi"
+
+    def test_unknown_version_falls_back_to_v1(self, tmp_path, monkeypatch):
+        from agent_skill_eval import harnesses
+
+        monkeypatch.setattr(harnesses, "get_cli_version", lambda agent: None)
+        assert harnesses.opencode_major_version() == 1

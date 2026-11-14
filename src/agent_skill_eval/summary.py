@@ -122,6 +122,38 @@ def _stability_summary(completed: list[dict]) -> dict:
     }
 
 
+def _trigger_rates(completed: list[dict]) -> dict:
+    """Skill-trigger rate per config.
+
+    Only runs where the harness could prove invocation or non-invocation
+    count in the denominator: unknown telemetry must not count as "did not
+    trigger".
+    """
+    groups: dict[str, dict[str, int]] = {}
+    for run in completed:
+        config = f"{run.get('agent')}_{'with_skill' if run.get('with_skill') else 'without_skill'}"
+        entry = groups.setdefault(config, {"invoked": 0, "known": 0, "unknown": 0, "total": 0})
+        entry["total"] += 1
+        invoked = run.get("skill_invoked")
+        if invoked is None:
+            entry["unknown"] += 1
+            continue
+        entry["known"] += 1
+        if invoked:
+            entry["invoked"] += 1
+
+    rates = {}
+    for config, entry in sorted(groups.items()):
+        rates[config] = {
+            "rate": round(entry["invoked"] / entry["known"], 4) if entry["known"] else None,
+            "invoked": entry["invoked"],
+            "known": entry["known"],
+            "unknown": entry["unknown"],
+            "total": entry["total"],
+        }
+    return rates
+
+
 def build_run_summary(
     *,
     skill_name: str,
@@ -197,6 +229,7 @@ def build_run_summary(
         "with_baseline": with_baseline,
         "duration_seconds": round(duration_seconds, 1),
         "pass_rates": pass_rates,
+        "trigger_rate": _trigger_rates(completed),
         "runs_completed": len(completed),
         "runs_failed_grading": len(failed_runs),
         "failed_runs": failed_runs,
@@ -290,6 +323,8 @@ def build_summary_from_artifacts(iteration_dir: Path) -> Optional[dict]:
                     "skill_hash": meta.get("skill_hash"),
                     "timing": timing,
                     "grading": grading,
+                    "skill_invoked": meta.get("skill_invoked"),
+                    "skill_invocation_evidence": meta.get("skill_invocation_evidence"),
                 }
 
     if not results:

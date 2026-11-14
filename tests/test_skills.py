@@ -67,8 +67,17 @@ class TestInstall:
     def test_installs_to_codex(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         result = installer.install(workspace, AgentType.CODEX)
-        assert result == workspace / ".codex" / "skills" / "my-skill"
+        # Codex discovers repo skills in .agents/skills (primary target).
+        assert result == workspace / ".agents" / "skills" / "my-skill"
+        assert (workspace / ".agents" / "skills" / "my-skill" / "SKILL.md").exists()
+        # Older Codex builds also scan .codex/skills; keep that copy too.
         assert (workspace / ".codex" / "skills" / "my-skill" / "SKILL.md").exists()
+
+    def test_install_targets_lists_primary_first(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        targets = installer.install_targets(workspace, AgentType.CODEX)
+        assert targets[0] == workspace / ".agents" / "skills" / "my-skill"
+        assert targets[1] == workspace / ".codex" / "skills" / "my-skill"
 
     def test_installs_to_fake(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
@@ -101,6 +110,13 @@ class TestUninstall:
         installer = SkillInstaller(skill_dir)
         installer.uninstall(workspace, AgentType.OPENCODE)
 
+    def test_removes_codex_install_from_all_targets(self, skill_dir, workspace):
+        installer = SkillInstaller(skill_dir)
+        installer.install(workspace, AgentType.CODEX)
+        installer.uninstall(workspace, AgentType.CODEX)
+        assert not (workspace / ".agents" / "skills" / "my-skill").exists()
+        assert not (workspace / ".codex" / "skills" / "my-skill").exists()
+
     def test_removes_empty_parent_directory(self, skill_dir, workspace):
         installer = SkillInstaller(skill_dir)
         installer.install(workspace, AgentType.OPENCODE)
@@ -117,3 +133,24 @@ class TestUninstall:
         installer.uninstall(workspace, AgentType.OPENCODE)
         assert parent_dir.exists()
         assert (parent_dir / "other-file.txt").exists()
+
+
+class TestFrontmatterSeverity:
+    def test_name_mismatch_is_a_warning_not_a_problem(self, tmp_path):
+        skill = tmp_path / "dir-name"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: other-name\ndescription: Test skill\n---\nbody")
+        installer = SkillInstaller(skill)
+        assert installer.frontmatter_problems() == []
+        warnings = installer.frontmatter_warnings()
+        assert len(warnings) == 1
+        assert "other-name" in warnings[0]
+        assert "dir-name" in warnings[0]
+
+    def test_missing_name_stays_a_problem(self, tmp_path):
+        skill = tmp_path / "demo"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\ndescription: Test skill\n---\nbody")
+        installer = SkillInstaller(skill)
+        assert any("missing 'name'" in problem for problem in installer.frontmatter_problems())
+        assert installer.frontmatter_warnings() == []

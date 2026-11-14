@@ -165,6 +165,10 @@ class RunMeta(BaseModel):
     # Output of the agent CLI's --version, best effort (None if the probe
     # failed or the agent has no version command).
     agent_cli_version: Optional[str] = None
+    # Whether the run actually loaded/invoked the installed skill. None means
+    # the harness exposed too little telemetry to decide (unknown, not false).
+    skill_invoked: Optional[bool] = None
+    skill_invocation_evidence: Optional[str] = None
 
 
 class CleanupManifest(BaseModel):

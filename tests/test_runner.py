@@ -907,3 +907,104 @@ class TestComputeBenchmark:
             assert res.deltas[agent].pass_rate == 1.0
             assert res.deltas[agent].time_seconds == -10.0
             assert res.deltas[agent].tokens == -100.0
+
+
+class TestTriggerRateSummary:
+    @staticmethod
+    def _run(agent: str, with_skill: bool, invoked):
+        return {
+            "eval_id": "e1",
+            "agent": agent,
+            "with_skill": with_skill,
+            "run_index": 1,
+            "timing": {},
+            "grading": {"summary": {"total": 1, "failed": 0, "skipped": 0, "pass_rate": 1.0}},
+            "skill_invoked": invoked,
+        }
+
+    @staticmethod
+    def _summary(results: dict):
+        from agent_skill_eval.summary import build_run_summary
+
+        return build_run_summary(
+            skill_name="demo",
+            iteration=1,
+            run_id="r",
+            agents=["opencode"],
+            eval_ids=["e1"],
+            side_effect_levels=["local-only"],
+            runs=1,
+            with_baseline=True,
+            duration_seconds=1.0,
+            results=results,
+            benchmark={},
+            cleanup={},
+        )
+
+    def test_unknown_does_not_count_as_not_triggered(self):
+        summary = self._summary(
+            {
+                "a": self._run("opencode", True, True),
+                "b": self._run("opencode", True, None),
+            }
+        )
+        rate = summary["trigger_rate"]["opencode_with_skill"]
+        assert rate["rate"] == 1.0
+        assert rate["known"] == 1
+        assert rate["unknown"] == 1
+        assert rate["total"] == 2
+
+    def test_known_false_lowers_the_rate(self):
+        summary = self._summary(
+            {
+                "a": self._run("opencode", True, True),
+                "b": self._run("opencode", True, False),
+            }
+        )
+        rate = summary["trigger_rate"]["opencode_with_skill"]
+        assert rate["rate"] == 0.5
+        assert rate["known"] == 2
+        assert rate["unknown"] == 0
+
+    def test_all_unknown_has_null_rate(self):
+        summary = self._summary({"a": self._run("codex", True, None)})
+        rate = summary["trigger_rate"]["codex_with_skill"]
+        assert rate["rate"] is None
+        assert rate["unknown"] == 1
+
+
+class TestTriggerRatePersistence:
+    def test_run_meta_and_summary_record_trigger_rate(self, tmp_path, evals_path):
+        skill_path = tmp_path / "skill"
+        skill_path.mkdir()
+        (skill_path / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: d\nlicense: MIT\ncompatibility: opencode\n---\nbody"
+        )
+
+        runner = EvalRunner(
+            skill_path=skill_path,
+            evals_path=evals_path,
+            workspace_base=tmp_path / "ws",
+            agents=[AgentType.FAKE],
+            with_baseline=True,
+            grader_model="",
+        )
+        iter_dir = runner.run(iteration=1)
+
+        metas = list(iter_dir.glob("eval-*/fake/*/run_meta.json"))
+        assert metas
+        for meta_path in metas:
+            meta = json.loads(meta_path.read_text())
+            assert "skill_invoked" in meta
+            assert "skill_invocation_evidence" in meta
+            if meta["with_skill"]:
+                assert meta["skill_invoked"] is True
+            else:
+                assert meta["skill_invoked"] is False
+
+        summary = json.loads((iter_dir / "summary.json").read_text())
+        with_rate = summary["trigger_rate"]["fake_with_skill"]
+        assert with_rate["rate"] == 1.0
+        assert with_rate["unknown"] == 0
+        without_rate = summary["trigger_rate"]["fake_without_skill"]
+        assert without_rate["rate"] == 0.0

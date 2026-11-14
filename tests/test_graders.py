@@ -4,6 +4,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from agent_skill_eval.graders import DeterministicGrader, grade_assertions
 from agent_skill_eval.models import GitStateSnapshot, StructuredAssertion
 
@@ -14,6 +16,45 @@ def _snapshot(ws: Path) -> GitStateSnapshot:
     from agent_skill_eval.git_state import capture_git_state
 
     return capture_git_state(ws)
+
+
+class TestBaselineFixtures:
+    """Eval fixtures must not look like agent edits just because they are copied in."""
+
+    @pytest.fixture
+    def fixture_workspace(self, tmp_path):
+        from agent_skill_eval.workspace import WorkspaceManager
+
+        fixture = tmp_path / "fixture.txt"
+        fixture.write_text("input data")
+        manager = WorkspaceManager(base_dir=tmp_path / "ws")
+        return manager.create_workspace("eval", {"fixture.txt": fixture})
+
+    def test_file_unchanged_passes_for_baseline_fixture(self, fixture_workspace, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="file_unchanged", path="fixture.txt")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=fixture_workspace,
+            pre_state=_snapshot(fixture_workspace),
+            post_state=_snapshot(fixture_workspace),
+        )
+        assert grading.summary.passed == 1
+        assert "No change detected" in grading.assertion_results[0].evidence
+
+    def test_git_clean_passes_with_baseline_fixture(self, fixture_workspace, tmp_path):
+        grading = grade_assertions(
+            [StructuredAssertion(type="git_clean")],
+            agent_output="",
+            output_dir=tmp_path / "outputs",
+            expected_output="",
+            workspace=fixture_workspace,
+        )
+        assert grading.summary.passed == 1
+
+    def test_fixture_creates_no_changed_files_in_snapshot(self, fixture_workspace):
+        assert _snapshot(fixture_workspace).changed_files == []
 
 
 class TestCheckContentContains:
@@ -100,6 +141,76 @@ class TestCheckCommandRan:
         result = grader._check_command_ran("Verify docker command ran", tmp_path)
         assert not result.passed
         assert "docker" not in result.evidence.lower() or "not found" in result.evidence.lower()
+
+    def test_fallback_marks_raw_log_match_as_low_confidence(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text("Running git commit...")
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert result.passed
+        assert "low confidence" in result.evidence
+
+    def test_ignores_echoed_skill_text_when_tool_events_exist(self, grader, tmp_path):
+        """Prose in the agent log must not count as a command that ran."""
+        (tmp_path / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "text",
+                    "part": {"text": "The skill instructions say to run `git commit -m done` when ready."},
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": {"command": "ls -la"}},
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert not result.passed
+        assert "not found in structured command logs" in result.evidence
+
+    def test_matches_opencode_tool_command(self, grader, tmp_path):
+        (tmp_path / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {
+                        "tool": "bash",
+                        "state": {"status": "completed", "input": {"command": "git status --short"}},
+                    },
+                }
+            )
+            + "\n"
+        )
+        result = grader._check_command_ran("Verify git command ran", tmp_path)
+        assert result.passed
+        assert "structured command log" in result.evidence
+
+    def test_structured_command_ran_uses_opencode_tool_events(self, tmp_path):
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "stdout.log").write_text(
+            json.dumps(
+                {
+                    "type": "tool_use",
+                    "part": {"tool": "bash", "state": {"input": {"command": "terraform plan"}}},
+                }
+            )
+            + "\n"
+        )
+        grading = grade_assertions(
+            [StructuredAssertion(type="command_ran", command="terraform plan")],
+            agent_output="",
+            output_dir=output_dir,
+            expected_output="",
+            workspace=tmp_path,
+        )
+        assert grading.summary.passed == 1
+        assert "structured command log" in grading.assertion_results[0].evidence
 
 
 class TestCheckGitBranch:

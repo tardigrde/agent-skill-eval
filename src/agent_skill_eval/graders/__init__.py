@@ -412,6 +412,60 @@ class DeterministicGrader:
                 chunks.append(path.read_text(errors="replace"))
         return "\n".join(chunks)
 
+    @staticmethod
+    def _commands_from_event(event: object) -> list[str]:
+        """Extract commands/tool calls from one parsed log event.
+
+        Only structured tool/command records are read (never free-text
+        output), so skill instructions echoed into the log cannot look like a
+        command that actually ran.
+        """
+        if not isinstance(event, dict):
+            return []
+
+        containers: list[dict] = [event]
+        item = event.get("item")
+        if isinstance(item, dict):
+            containers.append(item)
+        part = event.get("part")
+        if isinstance(part, dict):
+            containers.append(part)
+
+        found: list[str] = []
+        for obj in containers:
+            if obj.get("type") == "command_execution" and obj.get("command"):
+                found.append(str(obj["command"]))
+
+            tool_name = obj.get("tool_name") or obj.get("name")
+            if obj.get("type") in {"tool_call", "mcp_tool_call", "function_call"} and tool_name:
+                found.append(str(tool_name))
+
+            # OpenCode: {"type": "tool_use", "part": {"tool": "bash",
+            # "state": {"input": {"command": "..."}}}} (older builds put the
+            # input directly on the part).
+            if event.get("type") == "tool_use" or obj.get("type") in {"tool", "tool_use"}:
+                tool = obj.get("tool") or obj.get("tool_name") or obj.get("name")
+                if tool:
+                    found.append(str(tool))
+                tool_input = obj.get("input")
+                if tool_input is None and isinstance(obj.get("state"), dict):
+                    tool_input = obj["state"].get("input")
+                if isinstance(tool_input, dict):
+                    for key in ("command", "cmd", "filePath", "file_path", "path", "pattern", "url"):
+                        value = tool_input.get(key)
+                        if isinstance(value, str) and value:
+                            found.append(value)
+                elif isinstance(tool_input, str) and tool_input:
+                    found.append(tool_input)
+
+        seen: set[str] = set()
+        unique: list[str] = []
+        for value in found:
+            if value not in seen:
+                seen.add(value)
+                unique.append(value)
+        return unique
+
     def _executed_commands(self, output_dir: Path) -> list[str]:
         commands: list[str] = []
         for name in ("stdout.log", "stderr.log"):
@@ -423,15 +477,7 @@ class DeterministicGrader:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                item = event.get("item") if isinstance(event, dict) else None
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "command_execution" and item.get("command"):
-                    commands.append(str(item["command"]))
-                    continue
-                tool_name = item.get("tool_name") or item.get("name")
-                if item.get("type") in {"tool_call", "mcp_tool_call", "function_call"} and tool_name:
-                    commands.append(str(tool_name))
+                commands.extend(self._commands_from_event(event))
         return commands
 
     def _command_found(self, output_dir: Path, command: str) -> tuple[bool, str]:
@@ -445,8 +491,8 @@ class DeterministicGrader:
 
         logs = self._combined_logs(output_dir).lower()
         if command.lower() in logs:
-            return True, "Command found in logs"
-        return False, "Command not found in logs"
+            return True, "Command found in logs (low confidence: no structured command events available)"
+        return False, "Command not found in logs (no structured command events available; low confidence)"
 
     def _check_structured_file_exists(
         self,
@@ -727,13 +773,16 @@ class DeterministicGrader:
                     return AssertionResult(
                         text=assertion,
                         passed=True,
-                        evidence=f"Found '{cmd}' in {log_file.name}",
+                        # Raw logs can contain the echoed skill text or the
+                        # agent's prose, so this match is weaker than a
+                        # structured tool-call record.
+                        evidence=f"Found '{cmd}' in {log_file.name} (low confidence: no structured command events)",
                     )
 
         return AssertionResult(
             text=assertion,
             passed=False,
-            evidence="Command not found in logs",
+            evidence="Command not found in logs (no structured command events; low confidence)",
         )
 
     def _check_content_contains(self, assertion: str, agent_output: str) -> AssertionResult:
@@ -1247,7 +1296,7 @@ Be strict: only mark PASS if there is clear evidence. Quote the output or file c
 
     # Skill-install and VCS dirs: listing them would leak the skill text into
     # the judge's context and drown out the agent's actual artifacts.
-    _EXCLUDED_DIRS = (".git", ".claude", ".opencode", ".codex", ".fake")
+    _EXCLUDED_DIRS = (".git", ".claude", ".opencode", ".codex", ".agents", ".fake")
 
     def _workspace_files(self, workspace: Path) -> list[Path]:
         files = []

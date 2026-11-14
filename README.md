@@ -198,7 +198,7 @@ A JSON Schema for this format ships at [`schemas/evals.schema.json`](schemas/eva
 | `prompt` | str | Prompt sent to the agent verbatim |
 | `expected_output` | str | Reference output for LLM rubric grading |
 | `files` | list[str] | Fixture file paths (resolved relative to the evals directory) |
-| `stage_files` | bool | If true, fixture files are also `git add`-ed before the agent runs (default: false) |
+| `stage_files` | bool | Deprecated compatibility flag: fixtures are always committed into the workspace baseline before the agent runs, so this no longer changes behavior |
 | `assertions` | list[str \| object] | Prose assertions or structured deterministic assertions to grade against |
 | `should_trigger` | bool | If false, branch/commit/push/PR assertions are inverted (default: true) |
 | `force_skill_invocation` | bool | If true, the prompt is prefixed with `Use the $<skill> skill.` (default: false) |
@@ -340,6 +340,8 @@ agent-skill-eval status --workspace <skill-workspace> [--iteration N]
 
 Answers "what happened in the last run?" without a model call: pass rates per configuration, failed/skipped/errored runs, token totals with the cached share, total cost (or `unavailable`), budget violations, hook outcomes, and whether `cleanup.json` recorded remote side effects. Reads the iteration's `summary.json`; for runs that predate it, a reduced summary is rebuilt from the saved artifacts.
 
+`summary.json` also reports `trigger_rate` per configuration: whether the skill was actually loaded, based on OpenCode `tool_use` events (the `skill` tool or a read of the installed `SKILL.md`) and Codex command events. Runs where the harness exposes too little telemetry are counted as `unknown` and are excluded from the rate denominator — unknown is never treated as "did not trigger". Each run records `skill_invoked` and `skill_invocation_evidence` in `run_meta.json`.
+
 ### `compare`
 
 ```bash
@@ -371,7 +373,7 @@ For plugin-style paths such as `plugins/<plugin>/skills/<skill>/evals/evals.json
 agent-skill-eval doctor --skill ./skills/my-skill --evals ./evals/evals.json --agent codex
 ```
 
-Preflights the local agent CLI, skill frontmatter, eval suite, LLM-grader credentials, and source-repo tooling (`gh` for GitHub, `glab` for GitLab). Use it before live or expensive suites to catch missing tools and auth early.
+Preflights the local agent CLI, skill frontmatter, eval suite, LLM-grader credentials, and source-repo tooling (`gh` for GitHub, `glab` for GitLab). Use it before live or expensive suites to catch missing tools and auth early. Missing `name`/`description` frontmatter fields are failures; a frontmatter `name` that differs from the skill directory name is only a warning.
 
 ### `list`
 
@@ -679,7 +681,7 @@ How to read it: the **delta rows** are the skill's measured value per agent — 
 | --- | --- | --- |
 | OpenCode | `opencode run --format json --dangerously-skip-permissions` | `.opencode/skills/<name>/SKILL.md` |
 | Claude Code | `claude -p --output-format json --dangerously-skip-permissions` | `.claude/skills/<name>/SKILL.md` |
-| Codex | `codex exec --json --sandbox workspace-write --skip-git-repo-check` | `.codex/skills/<name>/SKILL.md` |
+| Codex | `codex exec --json --sandbox workspace-write --skip-git-repo-check` | `.agents/skills/<name>/SKILL.md` (also mirrored to `.codex/skills` for older builds) |
 
 ### Cost reporting
 

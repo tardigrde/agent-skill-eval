@@ -12,7 +12,10 @@ from agent_skill_eval.models import AgentType
 SKILL_PATHS = {
     AgentType.OPENCODE: [".opencode/skills"],
     AgentType.CLAUDE_CODE: [".claude/skills"],
-    AgentType.CODEX: [".codex/skills"],
+    # Codex discovers repository skills in ``.agents/skills`` (the first
+    # entry, used as the primary install target). Older Codex builds also
+    # scanned ``.codex/skills``; keep writing there for compatibility.
+    AgentType.CODEX: [".agents/skills", ".codex/skills"],
     AgentType.FAKE: [".fake/skills"],
 }
 
@@ -25,34 +28,50 @@ class SkillInstaller:
         if not self.skill_md.exists():
             raise FileNotFoundError(f"SKILL.md not found in {skill_path}")
 
-    def frontmatter_problems(self) -> list[str]:
-        """Return human-readable problems with the SKILL.md frontmatter.
-
-        Empty list means the frontmatter is usable. Agents rely on ``name``
-        and ``description`` to decide when to trigger a skill, so missing
-        fields cause silent misbehavior rather than errors.
-        """
+    def _frontmatter(self) -> tuple[dict | None, list[str]]:
         text = self.skill_md.read_text()
         if not text.startswith("---"):
-            return ["SKILL.md has no YAML frontmatter block (must start with '---')"]
+            return None, ["SKILL.md has no YAML frontmatter block (must start with '---')"]
         parts = text.split("---", 2)
         if len(parts) < 3:
-            return ["SKILL.md frontmatter is not closed with '---'"]
+            return None, ["SKILL.md frontmatter is not closed with '---'"]
         try:
             data = yaml.safe_load(parts[1])
         except yaml.YAMLError as e:
-            return [f"SKILL.md frontmatter is not valid YAML: {e}"]
+            return None, [f"SKILL.md frontmatter is not valid YAML: {e}"]
         if not isinstance(data, dict):
-            return ["SKILL.md frontmatter is not a YAML mapping"]
+            return None, ["SKILL.md frontmatter is not a YAML mapping"]
+        return data, []
+
+    def frontmatter_problems(self) -> list[str]:
+        """Return blocking problems with the SKILL.md frontmatter.
+
+        Empty list means the frontmatter is usable. Agents rely on ``name``
+        and ``description`` to decide when to trigger a skill, so missing
+        fields cause silent misbehavior rather than errors. A name that
+        differs from the directory name is only a warning (see
+        :meth:`frontmatter_warnings`).
+        """
+        data, errors = self._frontmatter()
+        if errors:
+            return errors
+        assert data is not None
         problems = []
         for field in ("name", "description"):
             if not data.get(field):
                 problems.append(f"SKILL.md frontmatter is missing '{field}'")
-        if data.get("name") and data["name"] != self.skill_name:
-            problems.append(
-                f"SKILL.md frontmatter name '{data['name']}' does not match skill directory name '{self.skill_name}'"
-            )
         return problems
+
+    def frontmatter_warnings(self) -> list[str]:
+        """Return non-blocking frontmatter issues (shown as warnings)."""
+        data, errors = self._frontmatter()
+        if errors or data is None:
+            return []
+        if data.get("name") and data["name"] != self.skill_name:
+            return [
+                f"SKILL.md frontmatter name '{data['name']}' does not match skill directory name '{self.skill_name}'"
+            ]
+        return []
 
     def content_hash(self) -> str:
         """Hash SKILL.md and bundled resources that are installed with it."""
@@ -119,12 +138,14 @@ class SkillInstaller:
             files.append(path)
         return files
 
+    def install_targets(self, workspace: Path, agent_type: AgentType) -> list[Path]:
+        """Directories this install would write, primary target first."""
+        return [workspace / target_dir / self.skill_name for target_dir in SKILL_PATHS[agent_type]]
+
     def install(self, workspace: Path, agent_type: AgentType) -> Path:
-        target_dirs = SKILL_PATHS[agent_type]
         installed_to = None
 
-        for target_dir in target_dirs:
-            dest_base = workspace / target_dir / self.skill_name
+        for dest_base in self.install_targets(workspace, agent_type):
             dest_base.mkdir(parents=True, exist_ok=True)
 
             shutil.copy2(self.skill_md, dest_base / "SKILL.md")
@@ -137,7 +158,8 @@ class SkillInstaller:
                 elif item.is_dir() and item.name not in ("evals", "__pycache__", ".git"):
                     shutil.copytree(item, dest_base / item.name, dirs_exist_ok=True)
 
-            installed_to = dest_base
+            if installed_to is None:
+                installed_to = dest_base
 
         if installed_to is None:
             raise ValueError(f"No skill paths configured for {agent_type}")

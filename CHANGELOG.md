@@ -6,6 +6,56 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## Unreleased
+
+### Features
+
+- **summary:** record and aggregate the skill trigger rate per config
+
+  Each run now stores `skill_invoked` and `skill_invocation_evidence` in
+  `run_meta.json`. `summary.json` aggregates them under `trigger_rate`, keyed
+  by config (for example `opencode_with_skill`). Detection uses OpenCode
+  `tool_use` events (the `skill` tool or a read of the installed `SKILL.md`)
+  and Codex command events. Runs whose harness exposes too little telemetry
+  are counted as `unknown`, never as "did not trigger".
+
+### Bug Fixes
+
+- **doctor:** warn, do not fail, when the frontmatter name differs from the directory
+
+  A skill whose `SKILL.md` declares a `name` different from its directory name
+  is still usable. `doctor` now reports it as a warning instead of a failure;
+  missing `name`/`description` fields remain blocking problems.
+
+- **graders:** match `command_ran` against structured tool-call events
+
+  `command_ran` searched raw logs that also contain the echoed skill text and
+  agent prose, so a command mentioned in instructions could count as executed.
+  It now reads command/tool-call events from Codex and OpenCode JSON logs and
+  only falls back to raw-log matching with an explicit low-confidence note.
+
+- **workspace:** commit fixtures and the installed skill into the baseline
+
+  Fixtures used to be copied after the initial commit, so they stayed untracked
+  and `file_unchanged`, `git_clean`, and `side_effect_contract` with
+  `allow_worktree_changes: false` reported the eval's own inputs as agent edits.
+  Fixtures are now part of the baseline commit, and the installed skill is
+  committed too (it is harness input, not an agent change). With-skill and
+  without-skill workspaces therefore share the same fixture baseline.
+
+- **harnesses:** strip terminal escape sequences before parsing OpenCode JSONL
+
+  OpenCode can write OSC window-title sequences and ANSI CSI codes on the same
+  line as a JSON event. `json.loads` then raised and the parser dropped the
+  line, losing text and token usage. Escapes are now removed before parsing.
+
+- **skills:** install Codex repository skills in `.agents/skills`
+
+  Codex discovers repository skills under `.agents/skills` (see the official Codex
+  skills documentation), so evaluations installed the skill where Codex never
+  looked. The installer now uses `.agents/skills` as the primary target and keeps
+  mirroring into `.codex/skills` for older Codex builds.
+
 ## v0.7.0 (2026-07-10)
 
 ### Features
