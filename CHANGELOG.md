@@ -6,6 +6,25 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.9.0 (2026-11-15)
+
+### Documentation
+
+- **harbor**: Add ADR 0001 for the Harbor backend
+  ([`87eadd2`](https://github.com/tardigrde/agent-skill-eval/commit/87eadd2f1a21fa64e33250c9cff988759c8dbbcd))
+
+### Features
+
+- **harbor**: Export evals as Harbor tasks and verify workspace assertions
+  ([`1a179b2`](https://github.com/tardigrde/agent-skill-eval/commit/1a179b25aca5c2ac8a3496eea025864560e95782))
+
+- add the harbor optional extra (0.26.*, Python 3.12+) - export one task per case; forced cases get
+  with/without variants - build a clean baseline commit and a hash manifest per task - run workspace
+  assertions in a separate verifier with per-assertion rewards - defer output-derived assertions to
+  the importer - copy only the deterministic grader into tests/ - cover both fixture and example
+  suites with golden tests - run harbor lint on every exported task when Harbor is installed
+
+
 ## v0.8.0 (2026-11-14)
 
 ### Bug Fixes
