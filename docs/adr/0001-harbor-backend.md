@@ -49,7 +49,7 @@ The native runner stays as a quick mode. It is documented as not isolated.
 | Component | Version | Source |
 | --- | --- | --- |
 | Harbor | 0.26.0 | PyPI `harbor==0.26.*` |
-| Python | 3.11+ (3.12.9 used for the spike) | `pyproject.toml` |
+| Python | 3.12+ for the Harbor backend (3.12.9 used for the spike); the native runner keeps 3.11 | `pyproject.toml` |
 | OpenCode V2 | 2.3.0 | Installed by Harbor's `opencode-v2` adapter |
 | Agent model (spike) | `openrouter/deepseek/deepseek-v4.1-flash` | OpenRouter |
 | Judge model (default) | `deepseek/deepseek-v4.1-flash` | OpenRouter |
@@ -252,6 +252,15 @@ Limitations of the spike:
    from the proof run. We override these to `has_valid_reward=false`.
 4. `--diff` only reuses or regrades trials when the task has a semantic
    `version`. Without it, every trial reruns.
+5. The default agent setup timeout is 360 seconds. Installing an agent CLI
+   (Node via nvm plus npm) exceeded it in one M1 run. Set
+   `agent_setup_timeout_multiplier` in the job config.
+6. Harbor 0.26 requires Python 3.12 or newer. The `harbor` extra uses a
+   `python_version >= '3.12'` marker so the native runner keeps Python 3.11
+   support.
+7. Git refuses a workdir owned by another uid (`dubious ownership`). The
+   verifier sets `safe.directory` for the restored workdir. The verifier
+   container is isolated, so this is safe.
 
 ## Implementation plan
 

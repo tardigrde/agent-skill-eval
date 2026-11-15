@@ -42,6 +42,10 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
 ]
+harbor = [
+    # Harbor requires Python >=3.12. The native runner still supports 3.11.
+    "harbor==0.26.*; python_version >= '3.12'",
+]
 
 [project.scripts]
 agent-skill-eval = "agent_skill_eval.cli:app"

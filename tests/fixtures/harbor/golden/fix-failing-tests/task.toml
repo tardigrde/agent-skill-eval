@@ -1,0 +1,33 @@
+schema_version = "1.4"
+version = "1.0"
+artifacts = ["/app"]
+
+[task]
+name = "skill-eval/case-implicit-invoke"
+description = "skill-eval case implicit-invoke"
+authors = [{ name = "agent-skill-eval" }]
+
+[metadata.skill_eval]
+case_id = "implicit-invoke"
+tags = ["correctness"]
+should_trigger = true
+force_skill_invocation = false
+side_effect_level = "local-only"
+workdir = "/app"
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 600.0
+
+[verifier.environment]
+network_mode = "no-network"
+
+[agent]
+timeout_sec = 600.0
+network_mode = "no-network"
+
+[environment]
+network_mode = "public"
+cpus = 2
+memory_mb = 4096
+workdir = "/app"
