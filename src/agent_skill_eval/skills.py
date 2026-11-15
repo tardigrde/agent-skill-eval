@@ -73,6 +73,13 @@ class SkillInstaller:
             ]
         return []
 
+    def frontmatter_name(self) -> str:
+        """Return the skill name agents see, falling back to the directory name."""
+        data, errors = self._frontmatter()
+        if errors or not data:
+            return self.skill_name
+        return str(data.get("name") or self.skill_name)
+
     def content_hash(self) -> str:
         """Hash SKILL.md and bundled resources that are installed with it."""
         digest = hashlib.sha256()

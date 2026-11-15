@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "workdir": "/app",
+  "tree_hash": "9453c2a827b146c5cc9e024f098c518dfc944fbd",
+  "branch": "main",
+  "files": [
+    {
+      "path": "calculator.py",
+      "sha256": "1af9e9f4f0428fa909e8c58c7accf03ff90d9504afb902513621644211007eee",
+      "mode": 420,
+      "size": 664
+    },
+    {
+      "path": "conftest.py",
+      "sha256": "368aec209d10cf1bf3a09cfa68feb9b49c514ff33cf4a033f6816a3240147386",
+      "mode": 420,
+      "size": 82
+    },
+    {
+      "path": "test_calculator.py",
+      "sha256": "e9999fc79211bf604de09be38f6b63fdec22f96dd9e0782e1d2c288f66b9fbb3",
+      "mode": 420,
+      "size": 1336
+    }
+  ],
+  "dirs": []
+}

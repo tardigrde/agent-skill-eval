@@ -504,6 +504,54 @@ def run(
         console.print("[green]Cleanup complete![/green]")
 
 
+@app.command(name="export-harbor")
+def export_harbor(
+    evals: Path = typer.Option(..., "--evals", "-e", help="Path to evals.json file"),
+    skill: Path = typer.Option(..., "--skill", "-s", help="Path to skill directory containing SKILL.md"),
+    out: Path = typer.Option(..., "--out", "-o", help="Directory for the exported Harbor tasks"),
+    base_image: str = typer.Option(
+        "python:3.12-slim",
+        "--base-image",
+        help="Base image for the agent environment (must provide a POSIX shell and git)",
+    ),
+    workdir: str = typer.Option("/app", "--workdir", help="Working directory inside the task container"),
+    task_version: str = typer.Option("1.0", "--task-version", help="Semantic version written to each task.toml"),
+    eval_ids: list[str] = typer.Option([], "--eval-id", help="Only export this eval id. Repeatable."),
+    side_effect_levels: list[str] = typer.Option(
+        [],
+        "--side-effect-level",
+        help="Only export eval cases with this side-effect level. Repeatable. "
+        f"Choices: {', '.join(SIDE_EFFECT_LEVELS)}",
+    ),
+    force: bool = typer.Option(False, "--force", help="Replace a non-empty output directory"),
+) -> None:
+    """Export an eval suite as a directory of Harbor tasks."""
+    from agent_skill_eval.harbor.export import export_suite
+
+    try:
+        manifest = export_suite(
+            evals_path=evals,
+            skill_path=skill,
+            out_dir=out,
+            base_image=base_image,
+            workdir=workdir,
+            task_version=task_version,
+            eval_ids=eval_ids,
+            side_effect_levels=side_effect_levels,
+            force=force,
+        )
+    except (ValueError, FileNotFoundError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    task_count = len(manifest.tasks)
+    console.print(f"[green]Exported {len(manifest.cases)} case(s) as {task_count} Harbor task(s) to {out}[/green]")
+    console.print(f"Skill: [bold]{manifest.skill_name}[/bold] (hash {manifest.skill_hash[:12]})")
+    console.print(
+        f"Next: run [bold]harbor lint[/bold] on each task under {out / 'tasks'}, then start the two arm jobs."
+    )
+
+
 @app.command(name="run-all")
 def run_all(
     root: Path = typer.Option(Path.cwd(), "--root", "-r", help="Directory to recursively search for paired suites"),

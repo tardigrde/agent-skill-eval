@@ -4,11 +4,32 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from openai import OpenAI, OpenAIError
-from rich.console import Console
+try:
+    from openai import OpenAI, OpenAIError
+except ImportError:  # pragma: no cover - the verifier image has no openai package
+    OpenAI = None
+
+    class OpenAIError(Exception):
+        """Fallback error type when the openai package is not installed."""
+
+
+try:
+    from rich.console import Console
+except ImportError:  # pragma: no cover - the verifier image has no rich package
+
+    class Console:  # type: ignore[no-redef]
+        """Minimal stderr printer used when rich is not installed."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def print(self, *args: Any, **kwargs: Any) -> None:
+            print(*args, file=sys.stderr)
+
 
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, state_diff
 from agent_skill_eval.models import (
@@ -247,6 +268,25 @@ class DeterministicGrader:
             result = self._check_assertion(assertion, output_dir, agent_output, workspace, should_trigger, diff)
             results.append(result)
         return results
+
+    def check_one(
+        self,
+        assertion: AssertionSpec,
+        output_dir: Path,
+        agent_output: str,
+        workspace: Path | None = None,
+        should_trigger: bool = True,
+    ) -> AssertionResult:
+        """Grade one assertion against the current pre/post state.
+
+        Used by the Harbor verifier, which grades a filtered subset of
+        assertions and needs the same routing as a normal run.
+        """
+        pre, post = self._resolve_states(output_dir, workspace)
+        self.pre_state = pre
+        self.post_state = post
+        diff = state_diff(pre, post) if pre and post else {}
+        return self._check_assertion(assertion, output_dir, agent_output, workspace, should_trigger, diff)
 
     def _resolve_states(
         self, output_dir: Path, workspace: Path | None
@@ -1141,6 +1181,11 @@ class LLMGrader:
 
     @property
     def client(self):
+        if OpenAI is None:
+            raise RuntimeError(
+                "The openai package is required for LLM grading. "
+                "Install agent-skill-eval with its default dependencies."
+            )
         if self._client is None:
             api_key = self._resolve_api_key()
             base_url = self.base_url or os.environ.get("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
