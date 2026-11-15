@@ -6,6 +6,85 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.11.1 (2026-11-15)
+
+### Bug Fixes
+
+- Sanitize eval dirs and document ATIF trust limits
+  ([`5401e16`](https://github.com/tardigrde/agent-skill-eval/commit/5401e16e84406caf976ac16f919e4ed435dad139))
+
+- share safe_eval_dir between the native runner and the Harbor importer so a hostile eval id cannot
+  write outside the iteration directory - document that trigger and out-of-workspace metrics come
+  from agent-writable ATIF and are signals, not scores - document that Harbor remote side-effect
+  checks fail closed
+
+- **harbor**: Align exported tasks with the Harbor 0.26 contract
+  ([`e1dd546`](https://github.com/tardigrde/agent-skill-eval/commit/e1dd546722ffd1d78d93225233ab5168b36f0a13))
+
+- require an explicit --agent-model for every Harbor agent; opencode-v2 fails every trial without
+  one - write version inside [task], where Harbor reads the package version, so --diff can reuse or
+  regrade trials - add the primary 'reward' key to reward.json so Harbor viewers, analysis, and
+  upload record a score - scope Harbor job directories to a per-run id so a repeat run after a skill
+  or fixture edit cannot resume stale trials - document the stricter --select ALL lint rules
+
+- **harbor**: Close host git and symlink escapes
+  ([`ce47085`](https://github.com/tardigrde/agent-skill-eval/commit/ce47085a2140e7fb025b9e2362f360714ac044e2))
+
+Security review findings: - never run git on downloaded agent artifacts on the host; the verifier
+  owns all git checks, so a forged .git/config cannot execute code as the host user - run git with
+  system/global config disabled and fsmonitor, hooks, external diff, and ssh helpers turned off -
+  skip symlinks in every host-side artifact and log walk, and confine file reads to the workspace -
+  grade the side-effect contract in the verifier, where the baseline is trusted - fail closed when
+  git history is missing instead of reporting a clean worktree - store the expected baseline commit
+  SHA and reject a same-tree rewrite - return correctness 0.0 when the verifier graded nothing -
+  delimit untrusted agent output and files in the LLM judge prompt and add a system instruction
+  against prompt injection - sanitize the eval id used in report output paths - compare file modes
+  in file_unchanged
+
+- **harbor**: Compute a baseline tree even for empty workspaces
+  ([`d361bc4`](https://github.com/tardigrde/agent-skill-eval/commit/d361bc40f0b5d82afe6e2adddb9dcccad52adf33))
+
+- **harbor**: Keep colliding cases and harden the verifier
+  ([`704ad26`](https://github.com/tardigrde/agent-skill-eval/commit/704ad26c4d339aef5704eeb8913e791cd1989065))
+
+- make task slugs unique so two case ids cannot overwrite one task - use the skill frontmatter name
+  in the forced-invocation prefix - validate --workdir and --base-image before writing Dockerfiles -
+  verify the baseline commit tree against tests/baseline.json, so an agent cannot forge
+  .git/eval-baseline to hide its own commit - leave incomplete cases out of pass^k instead of
+  counting errors as failures - separate unknown output-token telemetry from a real zero - check
+  agent-side exceptions before Harbor's reward_valid flag - create the host-side LLM grader once per
+  run, not once per job
+
+- **harbor**: Normalize baseline file modes
+  ([`03a20f4`](https://github.com/tardigrde/agent-skill-eval/commit/03a20f4c46bb053f171af40d6c3a72cf54dfa063))
+
+A checkout's group-write bit depends on umask; only the executable bit is stable across machines.
+  Record 0o644/0o755 so golden files and cross-machine baselines match.
+
+- **harbor**: Preserve assertion indices and reject partial imports
+  ([`3ab758f`](https://github.com/tardigrde/agent-skill-eval/commit/3ab758f1cfba621e8697e88bfe05cfac82ef6f7e))
+
+- treat a missing or partial reward-details.json as an import error instead of silently dropping
+  every verifier assertion - grade each deferred assertion separately so its result keeps its index
+  - fail the side-effect contract on a new untracked symlink - exclude forced-invocation cases from
+  the natural trigger rate - select arm tasks by exact name, not by a __with/__without glob - keep
+  sanitized eval directories distinct with a short hash - write timing.json before deferred grading
+  so tests_pass sees the exit code - check baseline ancestry with merge-base, not the 50-commit
+  snapshot - record the suite run_id and artifact workspace in run_meta - write evals_meta.json,
+  output.txt, and workspace_path so Harbor runs can be re-graded without rerunning agents; grade
+  recovers sanitized eval ids
+
+### Documentation
+
+- **harbor**: Make Harbor the recommended backend (M4)
+  ([`02d0345`](https://github.com/tardigrde/agent-skill-eval/commit/02d034579c5d14eb8d932e253848f171f3f5e345))
+
+- explain the two backends and the five proof-run leaks - document the harbor extra, Python 3.12
+  requirement, and Docker - add export-harbor and the Harbor run example - document pass^k,
+  percentiles, trigger split, tags, and out-of-workspace - document --write-baseline and --compare -
+  update the roadmap and fix the stale compute_benchmark note
+
+
 ## v0.11.0 (2026-11-15)
 
 ### Features
