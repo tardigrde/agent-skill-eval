@@ -2,15 +2,20 @@
 
 **Evaluate agent skills through the real coding harnesses you use every day — Claude Code, Codex, and OpenCode — not the raw API.**
 
-You wrote a `SKILL.md`. Does it actually make your agent better? agent-skill-eval answers that with data: it installs your skill into a fresh workspace, runs the *actual agent CLI* against your test prompts (with and without the skill), grades the results with deterministic state-diff checks plus an LLM rubric, and reports the measured impact — pass rates, pass@k across repeated runs, token costs, and wall-clock time.
+You wrote a `SKILL.md`. Does it actually make your agent better? agent-skill-eval answers that with data: it installs your skill into a fresh workspace, runs the *actual agent CLI* against your test prompts (with and without the skill), grades the results with deterministic state-diff checks plus an LLM rubric, and reports the measured impact — pass rates, pass^k across repeated runs, token costs, and wall-clock time.
+
+Runs in one of two backends: **Harbor** (recommended) puts every trial in its own container with a separate verifier and a network policy; the **native** runner uses a host workspace for fast, unisolated iteration.
 
 Because the eval goes through the full harness — system prompt, skill discovery, permissions, tool use — you get exactly the behavior you'll see in daily use, including the failure mode that matters most: *the agent never triggering your skill at all*.
 
 ## Features
 
 - **Real harnesses, end to end**: OpenCode, Claude Code, and Codex CLIs, in a single run
+- **Isolated Harbor backend**: one container per trial, a separate verifier, and a network policy — the agent cannot read the grader, sibling workspaces, or the skill from the internet
 - **Baseline comparison**: with-skill vs. without-skill, with a per-agent delta
-- **pass@k**: `--runs N` repeats every eval and reports full-pass rate and pass@k, because agents are stochastic and single-run numbers lie
+- **pass^k and pass@k**: `--runs N` repeats every eval and reports both metrics with Wilson intervals, because agents are stochastic and single-run numbers lie
+- **Cost and time next to correctness**: median and p90 tokens, cost, and wall time per arm, so a change that keeps correctness but doubles cost shows as a regression
+- **Trigger split**: positive cases and negative controls are reported separately; unknown telemetry is never counted as "did not trigger"
 - **State-delta grading**: code-based checks compare pre/post git state snapshots, so they don't false-pass on pre-existing branches, commits, or review requests
 - **Negative controls**: `should_trigger: false` inverts assertions to catch accidental skill triggering
 - **Honest grading**: assertions the grader can't check are *skipped*, not failed; a missing API key warns upfront instead of silently zeroing your pass rate
@@ -30,7 +35,12 @@ Because the eval goes through the full harness — system prompt, skill discover
 
 ```bash
 pip install agent-skill-eval
+
+# Recommended: the isolated Harbor backend (Python 3.12+, Docker)
+pip install 'agent-skill-eval[harbor]'
 ```
+
+The native runner supports Python 3.11+. Harbor 0.26 requires Python 3.12+ and Docker. The `harbor` extra uses a version marker, so installing it on 3.11 is a no-op and `--backend harbor` reports a clear error.
 
 This installs two identical commands: `agent-skill-eval` and the short alias `ase`. The CLI is also runnable as a module — `python -m agent_skill_eval run ...` — which is handy when the scripts directory isn't on your `PATH` or you want to pin the interpreter (e.g. `uv run python -m agent_skill_eval`).
 
@@ -44,7 +54,33 @@ cd agent-skill-eval
 uv venv && uv pip install -e ".[dev]"
 ```
 
-You also need the agent CLIs you want to evaluate (`claude`, `codex`, `opencode`) installed and authenticated, and an `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM rubric grading.
+You also need the agent CLIs you want to evaluate (`claude`, `codex`, `opencode`) installed and authenticated, and an `OPENROUTER_API_KEY` or `OPENAI_API_KEY` for LLM rubric grading. The Harbor backend installs the agent CLI inside the task container, so the host only needs Docker and the model API key.
+
+## Backends
+
+| Backend | Isolation | Best for |
+| --- | --- | --- |
+| `harbor` (recommended) | One container per trial, a separate verifier, network policy, native skill install | Numbers you publish or compare |
+| `native` | Host workspace, no isolation | Fast iteration on your own machine |
+
+Harbor is the recommended backend because host isolation is not optional for a
+skill benchmark. A public proof run on 2026-11-14 found five failures in the
+native runner:
+
+1. A no-skill agent walked up from its workspace and read the vendored
+   `SKILL.md`, `evals.json`, and the grader.
+2. An agent read sibling workspaces through its tool's shared snapshot store.
+3. An agent fetched the skill from the internet and installed it globally. The
+   install leaked into later runs.
+4. Two arms shared `/tmp`.
+5. Agent startup failures were graded as false zeros.
+
+PR #16 fixed what the runner could fix. Isolation is Harbor's job: one container
+per trial, tests uploaded only after the agent phase, a separate verifier by
+default, and `no-network` during the agent run with an inference-host allowlist.
+
+The native runner stays as the quick mode. It is faster to debug, but it is
+**not isolated**. Do not use it for results you intend to publish.
 
 ## Version and documentation status
 
@@ -93,6 +129,21 @@ agent-skill-eval run \
 # 4. Read the results
 agent-skill-eval report --workspace ./eval-workspace/write-release-notes-workspace --show-evidence
 ```
+
+For isolated, publishable numbers, run the same suite on Harbor:
+
+```bash
+agent-skill-eval run --backend harbor \
+  --skill ./skills/write-release-notes \
+  --evals ./examples/write-release-notes/evals/evals.json \
+  --agent opencode \
+  --agent-model opencode=openrouter/deepseek/deepseek-v4.1-flash \
+  --runs 3 --concurrency 2
+```
+
+Harbor model strings need the provider prefix (`openrouter/...`) so Harbor can
+route the key and endpoint. The task container installs the agent CLI; the host
+only needs Docker and `OPENROUTER_API_KEY`.
 
 To start a suite for your own skill:
 
@@ -248,12 +299,29 @@ Supported `type` values are `file_exists`, `file_not_exists`, `file_contains`, `
 
 ## CLI Commands
 
+### `export-harbor`
+
+```bash
+agent-skill-eval export-harbor \
+  --skill <skill-dir> --evals <evals.json> --out <dir> \
+  [--base-image python:3.12-slim] [--workdir /app] [--force]
+```
+
+Writes one Harbor task per eval case. Each task has `task.toml`, `instruction.md`, an `environment/` with committed fixtures, and a `tests/` directory with the deterministic grader and a baseline manifest. Forced-invocation cases get a `__with` and a `__without` variant, so the with-skill prompt prefix never leaks into the baseline.
+
+`run --backend harbor` calls the exporter for you. Use `export-harbor` directly when you want to inspect or lint the tasks first:
+
+```bash
+for task in <dir>/tasks/*/; do harbor lint "$task"; done
+```
+
 ### `run`
 
 ```bash
 agent-skill-eval run \
   --skill <skill-dir> --evals <evals.json> \
   --agent opencode --agent claude-code --agent codex \
+  [--backend native|harbor] \
   [--agent-model claude-code=haiku] [--agent-model codex=gpt-5-mini] \
   [--reasoning-effort medium] \
   [--harness-base-url https://openrouter.ai/api/v1] \
@@ -267,17 +335,21 @@ agent-skill-eval run \
   [--post-grade-command "python scripts/grade_external.py"] \
   [--post-run-command "python scripts/teardown.py"] \
   [--pricing-config pricing.json] \
-  [--grader-model deepseek/deepseek-v4-flash] [--grader-base-url URL] \
+  [--grader-model deepseek/deepseek-v4.1-flash] [--grader-base-url URL] \
+  [--harbor-base-image python:3.12-slim] [--harbor-jobs-dir DIR] \
+  [--write-baseline baseline.json] [--compare baseline.json] \
   [--source-repo https://github.com/foo/bar.git] \
   [--workspace ./eval-workspace]
 ```
 
 Key options:
 
-- `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable.
+- `--backend`: `native` (host workspace, not isolated) or `harbor` (Docker, isolated). Harbor ignores `--source-repo`, budget checks, pricing, and lifecycle hooks; it prints a warning for each.
+- `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable. With Harbor, use the provider-prefixed form (`openrouter/deepseek/deepseek-v4.1-flash`).
+- `--write-baseline` / `--compare`: write a baseline JSON after the run, or compare the run to an earlier baseline. The comparison includes per-config pass-rate, pass^k, token, cost, and time deltas, plus a per-case bootstrap interval, and is written to `comparison.json` and `comparison.md`.
 - `--reasoning-effort`: reasoning setting passed to agents that support it (codex: `model_reasoning_effort`, e.g. `minimal`/`low`/`medium`/`high`/`xhigh`). Without it, agents silently inherit their own local config (e.g. `~/.codex/config.toml`) — two machines can then benchmark different reasoning settings under the same command line. Agents without a pass-through flag print a warning and record `null`. The effective value lands in `run_meta.json`.
 - `--harness-base-url`: injected as `ANTHROPIC_BASE_URL` (claude-code) / `OPENAI_BASE_URL` (codex, opencode) into the agent process.
-- `--runs, -n`: repeat each (eval, agent, config) N times; enables pass@k stats. Results land in `run-1/`, `run-2/`, ... subdirectories.
+- `--runs, -n`: repeat each (eval, agent, config) N times; enables pass@k and pass^k stats with a Wilson interval. Results land in `run-1/`, `run-2/`, ... subdirectories.
 - `--timeout` / `--retries`: per-run agent timeout (default 600s) and retries on timeout or non-zero exit (default 1). Also settable via `ASE_AGENT_TIMEOUT` / `ASE_AGENT_RETRIES`.
 - `--eval-id`: run only the named case(s); repeatable. Unknown ids fail fast with the list of available ids, before any model call. The applied filter is recorded in `evals_meta.json` (`selected_eval_ids`) and `summary.json` (`eval_ids`), and all artifacts naturally describe only the selected cases. The cheap inner loop after a small skill edit is `validate --eval-id X` then `run --eval-id X`.
 - `--side-effect-level`: run only the requested side-effect level(s); repeatable. Use this to run `static` and `local-only` checks before deliberate live-provider suites.
@@ -631,6 +703,28 @@ eval-workspace/
 ```
 
 To debug a failure: find `"passed": false` entries, read `evidence`, compare `pre_state.json`/`post_state.json`, then check `outputs/output.txt` for the agent's full response. Or just run `agent-skill-eval report --show-evidence`.
+
+### Skill-centric metrics
+
+`benchmark.json` and `summary.json` answer more than "did it pass":
+
+- `pass_rate` is the mean per-run pass rate. `pass_hat_k` is the stricter
+  per-case metric: **all k attempts pass**. It has a Wilson interval, the case
+  count, and the number of skipped assertions. `pass_at_k` ("any attempt
+  passes") is kept next to it.
+- `stats.tokens`, `stats.cost_usd`, and `stats.time_seconds` carry `median` and
+  `p90` next to `mean`, so a change that keeps correctness but doubles cost or
+  time is visible.
+- `summary.tag_pass_rates` reports pass rates per case tag: `correctness`,
+  `skill_effect`, or `judge`. Untagged cases default to `correctness`.
+- `summary.trigger_rate` splits positive cases from negative controls
+  (`should_trigger: false`). `unknown` is reported separately and never counted
+  as "did not trigger".
+- `summary.out_of_workspace` counts runs whose ATIF tool calls touched paths
+  outside the task workdir, with examples. It is a leak signal inside the
+  sandbox, not a hard failure.
+- Runs with 0 output tokens, an invalid Harbor reward, or an agent-side
+  exception are errors, never scores. They appear in `summary.errors`.
 
 ### Iterating on a skill
 

@@ -61,6 +61,7 @@ src/agent_skill_eval/
 - Default grader model `deepseek/deepseek-v4-flash` is a valid OpenRouter model. Override with `--grader-model` or set a real model.
 - `graders/__init__.py` is a monolith (700+ lines) containing both deterministic and LLM graders
 - `harnesses/__init__.py` has a dead `cost_usd` read at line ~140 (no-op code)
-- `compute_benchmark` returns delta=0.0 for multi-agent runs (known bug)
+- `compute_benchmark` returns `delta=null` for multi-agent runs; use the per-agent `deltas` map
+- Harbor 0.26 requires Python 3.12+; the `harbor` extra uses a version marker so the native runner keeps 3.11 support
 - Workspace paths must contain literal `with_skill`/`without_skill` substrings or grading breaks silently
 - `uv.lock` is gitignored — not tracked in version control
