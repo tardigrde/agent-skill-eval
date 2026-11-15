@@ -1,9 +1,9 @@
 schema_version = "1.4"
-version = "1.0"
 artifacts = ["/app"]
 
 [task]
 name = "skill-eval/case-implicit-invoke"
+version = "1.0"
 description = "skill-eval case implicit-invoke"
 authors = [{ name = "agent-skill-eval" }]
 

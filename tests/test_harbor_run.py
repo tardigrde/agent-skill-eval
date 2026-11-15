@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from agent_skill_eval.harbor.run import HarborRunOptions, run_harbor
 from agent_skill_eval.models import AgentType
 
@@ -162,6 +164,21 @@ def _write_template(tmp_path: Path) -> Path:
     return job_dir
 
 
+def test_run_harbor_requires_an_explicit_model(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agent_skill_eval.harbor.run.require_harbor", lambda: "0.26.0")
+
+    with pytest.raises(ValueError, match="explicit model"):
+        run_harbor(
+            HarborRunOptions(
+                evals_path=EVALS,
+                skill_path=SKILL,
+                workspace=tmp_path / "workspace",
+                agents=[AgentType.OPENCODE],
+                agent_models={},
+            )
+        )
+
+
 def test_run_harbor_exports_runs_and_imports(tmp_path: Path, monkeypatch):
     template = _write_template(tmp_path)
     monkeypatch.setenv("FAKE_JOB_TEMPLATE", str(template))
@@ -194,3 +211,21 @@ def test_run_harbor_exports_runs_and_imports(tmp_path: Path, monkeypatch):
 
     benchmark = json.loads((iteration_dir / "benchmark.json").read_text())
     assert benchmark["deltas"]["opencode"]["pass_rate"] == 0.0
+
+    run_harbor(
+        HarborRunOptions(
+            evals_path=EVALS,
+            skill_path=SKILL,
+            workspace=tmp_path / "workspace",
+            agents=[AgentType.OPENCODE],
+            agent_models={AgentType.OPENCODE: "openrouter/deepseek/deepseek-v4.1-flash"},
+            runs=1,
+            concurrency=1,
+            harbor_bin=str(fake),
+        )
+    )
+    second = json.loads((iteration_dir / "summary.json").read_text())
+    assert second["run_id"] != summary["run_id"]
+    jobs_root = iteration_dir / "harbor" / "jobs"
+    assert (jobs_root / summary["run_id"]).is_dir()
+    assert (jobs_root / second["run_id"]).is_dir()

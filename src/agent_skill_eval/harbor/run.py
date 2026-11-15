@@ -134,6 +134,11 @@ def run_harbor(options: HarborRunOptions) -> Path:
     harbor_bin = options.harbor_bin or shutil.which("harbor") or "harbor"
     require_harbor()
 
+    missing_models = [agent.value for agent in options.agents if not options.agent_models.get(agent)]
+    if missing_models:
+        flags = ", ".join(f"--agent-model {name}=<provider/model>" for name in missing_models)
+        raise ValueError(f"The Harbor backend needs an explicit model for each agent: {flags}")
+
     skill_path = options.skill_path.resolve()
     installer = SkillInstaller(skill_path)
     skill_hash = installer.content_hash()
@@ -141,7 +146,11 @@ def run_harbor(options: HarborRunOptions) -> Path:
     skill_name = installer.skill_name
     iteration_dir = options.workspace / f"{skill_name}-workspace" / f"iteration-{options.iteration}"
     harbor_dir = iteration_dir / "harbor"
-    jobs_dir = options.jobs_dir or harbor_dir / "jobs"
+    run_id = uuid.uuid4().hex[:8]
+    # Harbor resumes a job directory whose config matches. A repeat run after
+    # a skill or fixture edit must not reuse those trials, so scope the jobs
+    # to this run.
+    jobs_dir = (options.jobs_dir or harbor_dir / "jobs") / run_id
     export_dir = harbor_dir / "tasks-export"
 
     manifest: HarborExportManifest = export_suite(
@@ -160,7 +169,6 @@ def run_harbor(options: HarborRunOptions) -> Path:
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
     started = time.time()
-    run_id = uuid.uuid4().hex[:8]
     job_dirs: list[Path] = []
 
     for agent in options.agents:

@@ -346,19 +346,29 @@ def _route_names(assertion: str) -> set[str]:
     return {classify_assertion(assertion)}
 
 
-def write_rewards(results: list[AssertionResult], payload: dict[str, Any]) -> None:
+def reward_payload(results: list[AssertionResult]) -> dict[str, float]:
     graded = [result for result in results if not result.skipped]
     passed = sum(1 for result in graded if result.passed)
     # No graded assertion means no evidence. Never hand Harbor a free pass;
     # the importer replaces this value when every check was deferred.
     correctness = passed / len(graded) if graded else 0.0
-    reward: dict[str, float] = {"correctness": correctness}
+    # Harbor's viewers and uploaders read the "reward" key. "correctness" is
+    # kept as a labelled aggregate next to the per-assertion keys.
+    reward: dict[str, float] = {"reward": correctness, "correctness": correctness}
     for index, result in enumerate(results):
         if not result.skipped:
             reward[f"a{index}"] = 1.0 if result.passed else 0.0
+    return reward
 
-    target = Path("/logs/verifier")
+
+def write_rewards(
+    results: list[AssertionResult],
+    payload: dict[str, Any],
+    target: Optional[Path] = None,
+) -> None:
+    target = target or Path("/logs/verifier")
     target.mkdir(parents=True, exist_ok=True)
+    reward = reward_payload(results)
     (target / "reward.json").write_text(json.dumps(reward, indent=2) + "\n", encoding="utf-8")
     (target / "reward-details.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 

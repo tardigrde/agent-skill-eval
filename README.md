@@ -315,6 +315,11 @@ Writes one Harbor task per eval case. Each task has `task.toml`, `instruction.md
 for task in <dir>/tasks/*/; do harbor lint "$task"; done
 ```
 
+Default lint passes. `harbor lint --select ALL` is stricter: it flags unpinned
+base images (`unpinned-image`) and a root agent user (`root-agent`). Pin
+`--base-image` by digest and add a non-root user to the image if your policy
+requires those rules.
+
 ### `run`
 
 ```bash

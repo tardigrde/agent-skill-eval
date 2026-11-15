@@ -61,11 +61,11 @@ def render_task_toml(
 ) -> str:
     lines = [
         'schema_version = "1.4"',
-        f"version = {toml_string(task_version)}",
         f"artifacts = {toml_list([workdir])}",
         "",
         "[task]",
         f"name = {toml_string('skill-eval/' + task_name)}",
+        f"version = {toml_string(task_version)}",
         f"description = {toml_string('skill-eval case ' + str(case.id))}",
         'authors = [{ name = "agent-skill-eval" }]',
         "",

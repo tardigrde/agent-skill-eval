@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
 from agent_skill_eval.harbor.baseline import build_baseline
-from agent_skill_eval.harbor.verifier import grade
+from agent_skill_eval.harbor.verifier import grade, reward_payload, write_rewards
+from agent_skill_eval.models import AssertionResult
 
 
 def _make_workspace(tmp_path: Path) -> tuple[Path, object]:
@@ -152,6 +154,29 @@ def test_forged_baseline_marker_is_not_trusted(tmp_path: Path):
     assert results[0].passed is False
     assert "does not match" in results[0].evidence
     assert payload["baseline_trusted"] is False
+
+
+def test_reward_payload_has_the_primary_reward_key():
+    results = [
+        AssertionResult(text="a", passed=True, evidence="", method="deterministic"),
+        AssertionResult(text="b", passed=False, evidence="", method="deterministic"),
+        AssertionResult(text="c", passed=False, evidence="", method="deferred", skipped=True),
+    ]
+
+    payload = reward_payload(results)
+
+    assert payload["reward"] == payload["correctness"] == 0.5
+    assert payload["a0"] == 1.0
+    assert payload["a1"] == 0.0
+    assert "a2" not in payload
+
+
+def test_write_rewards_never_passes_an_empty_verifier(tmp_path: Path):
+    write_rewards([], {}, target=tmp_path)
+    payload = json.loads((tmp_path / "reward.json").read_text())
+
+    assert payload["reward"] == 0.0
+    assert payload["correctness"] == 0.0
 
 
 def test_deferred_assertions_are_skipped_in_the_verifier(tmp_path: Path):
