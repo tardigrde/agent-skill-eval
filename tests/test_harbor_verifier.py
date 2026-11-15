@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,11 +26,15 @@ def _make_workspace(tmp_path: Path) -> tuple[Path, object]:
         (workspace / target).write_bytes(source.read_bytes())
 
     subprocess.run(["git", "init", "-q", "-b", "main", str(workspace)], check=True)
-    subprocess.run(["git", "-C", str(workspace), "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", str(workspace), "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.email", "eval@agent-skill-eval.local"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.name", "agent-skill-eval"], check=True)
     subprocess.run(["git", "-C", str(workspace), "add", "-A"], check=True)
     env = {
         **os.environ,
+        "GIT_AUTHOR_NAME": "agent-skill-eval",
+        "GIT_AUTHOR_EMAIL": "eval@agent-skill-eval.local",
+        "GIT_COMMITTER_NAME": "agent-skill-eval",
+        "GIT_COMMITTER_EMAIL": "eval@agent-skill-eval.local",
         "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
         "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
     }
@@ -115,6 +120,22 @@ def test_negative_control_fails_when_a_commit_is_created(tmp_path: Path):
 
     assert results[0].passed is False
     assert "new commit" in results[0].evidence.lower()
+
+
+def test_missing_git_history_fails_git_checks(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    shutil.rmtree(workspace / ".git")
+    case = _case(
+        workspace,
+        [{"type": "git_clean"}, "A git commit was created"],
+        should_trigger=False,
+    )
+
+    results, payload = grade(case, baseline)
+
+    assert [result.passed for result in results] == [False, False]
+    assert "missing" in results[0].evidence.lower()
+    assert payload["has_git"] is False
 
 
 def test_forged_baseline_marker_is_not_trusted(tmp_path: Path):

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from agent_skill_eval.git_state import capture_git_state, state_diff
 from agent_skill_eval.graders import grade_assertions, summarize_assertion_results
 from agent_skill_eval.harbor import harbor_version
 from agent_skill_eval.harbor.atif import (
@@ -18,33 +18,14 @@ from agent_skill_eval.harbor.atif import (
     raw_agent_text,
     reasoning_tokens,
 )
-from agent_skill_eval.harbor.baseline import (
-    baseline_commit,
-    baseline_violations,
-    is_git_repo,
-)
-from agent_skill_eval.harbor.models import HarborBaseline, HarborExportManifest
-from agent_skill_eval.models import (
-    AssertionResult,
-    GitStateSnapshot,
-    GradingResult,
-    RunMeta,
-    TimingData,
-)
+from agent_skill_eval.harbor.models import HarborExportManifest
+from agent_skill_eval.models import AssertionResult, GradingResult, RunMeta, TimingData
 
 HARBOR_AGENT_MAP = {
     "opencode-v2": "opencode",
     "opencode": "opencode",
     "claude-code": "claude-code",
     "codex": "codex",
-}
-_AGENT_ERRORS = {
-    "NonZeroAgentExitCodeError",
-    "AgentTimeoutError",
-    "ContextWindowExceededError",
-    "OutputTokenExceededError",
-    "ContextLengthExceededError",
-    "OutputLengthExceededError",
 }
 
 
@@ -68,6 +49,12 @@ def _ms(start: Optional[str], finish: Optional[str]) -> int:
     return max(int(delta.total_seconds() * 1000), 0)
 
 
+def _safe_eval_dir(case_id: str) -> str:
+    """Keep a hostile eval id from writing outside the iteration directory."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(case_id)).strip("._-") or "case"
+    return f"eval-{slug}"
+
+
 def _artifact_workspace(trial_dir: Path, workdir: str) -> Path:
     relative = workdir.lstrip("/")
     candidates = [
@@ -79,18 +66,6 @@ def _artifact_workspace(trial_dir: Path, workdir: str) -> Path:
         if candidate.is_dir():
             return candidate
     return trial_dir / "artifacts"
-
-
-def _workspace_baseline(task_dir: Optional[Path]) -> Optional[HarborBaseline]:
-    if task_dir is None:
-        return None
-    path = task_dir / "tests" / "baseline.json"
-    if not path.is_file():
-        return None
-    try:
-        return HarborBaseline.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
 
 
 def _sanity_error(result: dict[str, Any]) -> Optional[str]:
@@ -162,53 +137,6 @@ def _deferred_results(
     return {index: result for index, result in zip(indices, grading.assertion_results)}
 
 
-def _side_effect_result(
-    case: dict[str, Any],
-    *,
-    workspace: Path,
-    baseline: Optional[HarborBaseline],
-) -> Optional[AssertionResult]:
-    contract = case.get("side_effect_contract")
-    if not contract or baseline is None:
-        return None
-
-    violations = baseline_violations(workspace, baseline)
-    problems: list[str] = []
-    evidence: list[str] = []
-    if violations and not contract.get("allow_worktree_changes", True):
-        problems.append("worktree changes are not allowed")
-        evidence.extend(violations)
-
-    if is_git_repo(workspace):
-        sha = baseline_commit(workspace)
-        if sha:
-            pre = GitStateSnapshot(
-                local_branches=["main"],
-                current_branch="main",
-                head_sha=sha,
-                commit_count=1,
-                commit_shas=[sha],
-                branch_heads={"main": sha},
-            )
-            post = capture_git_state(workspace)
-            diff = state_diff(pre, post)
-            if diff.get("new_branches") and not contract.get("allow_new_local_branches", True):
-                problems.append("new local branches are not allowed")
-                evidence.append(f"new branches: {diff['new_branches']}")
-            if diff.get("new_commit_shas") and not contract.get("allow_new_commits", True):
-                problems.append("new commits are not allowed")
-                evidence.append(f"new commits: {diff['new_commit_shas']}")
-    else:
-        evidence.append("git history unavailable; remote side-effect checks not evaluated")
-
-    return AssertionResult(
-        text="The run stayed inside its side-effect contract",
-        passed=not problems,
-        evidence="; ".join(problems + evidence) or "No side-effect violations",
-        method="side-effect-contract",
-    )
-
-
 def _skill_names(manifest: HarborExportManifest, case: dict[str, Any]) -> list[str]:
     names = {
         manifest.skill_name,
@@ -253,6 +181,10 @@ def import_job(
         run_index = counters[key]
 
         trajectory = load_trajectory(trial_dir)
+        if trajectory:
+            traj_agent = str((trajectory.get("agent") or {}).get("name") or "")
+            if traj_agent and agent_info.get("name") and traj_agent != str(agent_info.get("name")):
+                trajectory = None
         timing = _timing(result, trajectory)
         error = _sanity_error(result)
         run_key = f"{case_id}-{agent}-{'with' if with_skill else 'without'}-r{run_index}"
@@ -272,7 +204,7 @@ def import_job(
         workspace = _artifact_workspace(trial_dir, workdir)
         agent_output = raw_agent_text(trial_dir)
 
-        config_name = f"eval-{case_id}"
+        config_name = _safe_eval_dir(str(case_id))
         config_dir = iteration_dir / config_name / agent / ("with_skill" if with_skill else "without_skill")
         if runs > 1:
             config_dir = config_dir / f"run-{run_index}"
@@ -307,12 +239,7 @@ def import_job(
             )
         )
 
-        baseline = _workspace_baseline(Path(str((config.get("task") or {}).get("path") or "")))
-        side_effect = _side_effect_result(case, workspace=workspace, baseline=baseline)
-
         ordered = [by_index[index] for index in sorted(by_index)]
-        if side_effect is not None:
-            ordered.append(side_effect)
         grading = GradingResult(
             assertion_results=ordered,
             summary=summarize_assertion_results(ordered),
@@ -353,16 +280,6 @@ def import_job(
             tags=tags,
         )
 
-        pre_state = None
-        post_state = None
-        if is_git_repo(workspace):
-            pre_state = GitStateSnapshot()
-            sha = baseline_commit(workspace)
-            if sha:
-                pre_state.head_sha = sha
-                pre_state.commit_shas = [sha]
-            post_state = capture_git_state(workspace)
-
         with open(config_dir / "grading.json", "w", encoding="utf-8") as handle:
             json.dump(grading.model_dump(), handle, indent=2)
         with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
@@ -380,11 +297,6 @@ def import_job(
                 handle,
                 indent=2,
             )
-        if pre_state is not None and post_state is not None:
-            with open(output_dir / "pre_state.json", "w", encoding="utf-8") as handle:
-                json.dump(pre_state.model_dump(), handle, indent=2)
-            with open(output_dir / "post_state.json", "w", encoding="utf-8") as handle:
-                json.dump(post_state.model_dump(), handle, indent=2)
 
         results[run_key] = {
             "eval_id": case.get("case_id", case_id),

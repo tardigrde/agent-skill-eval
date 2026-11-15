@@ -51,7 +51,7 @@ class ToolCall:
 
 def load_trajectory(trial_dir: Path) -> Optional[dict[str, Any]]:
     for candidate in (trial_dir / "agent" / "trajectory.json", trial_dir / "trajectory.json"):
-        if candidate.is_file():
+        if candidate.is_file() and not candidate.is_symlink():
             try:
                 data = json.loads(candidate.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -252,11 +252,13 @@ def raw_agent_text(trial_dir: Path, *, limit_bytes: int = 2_000_000) -> str:
     if not agent_dir.is_dir():
         return ""
     preferred = ["opencode-v2.txt", "opencode.txt", "claude-code.txt", "codex.txt"]
-    candidates = [agent_dir / name for name in preferred if (agent_dir / name).is_file()]
+    candidates = [
+        agent_dir / name for name in preferred if (agent_dir / name).is_file() and not (agent_dir / name).is_symlink()
+    ]
     candidates.extend(
         path
         for path in sorted(agent_dir.rglob("*"))
-        if path.is_file() and path.name not in {"trajectory.json"} and path not in candidates
+        if path.is_file() and not path.is_symlink() and path.name not in {"trajectory.json"} and path not in candidates
     )
     chunks: list[str] = []
     total = 0
