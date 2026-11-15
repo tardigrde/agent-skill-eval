@@ -238,6 +238,18 @@ Limitations of the spike:
 - The task used a local Dockerfile and a separate verifier that reuses the agent
   environment. It did not use a dedicated verifier image.
 
+## Limits
+
+- ATIF is written into the agent's log directory. A hostile agent can write
+  there. Trigger state and out-of-workspace access are signals, not scores.
+  The importer checks the trajectory's agent name, but it cannot prove the file
+  is untampered. Do not use these numbers as a pass/fail gate.
+- Remote side-effect checks (`pushed`, `pr_created`) are not implemented in the
+  verifier. A case whose side-effect contract forbids remote branches or review
+  requests fails closed in Harbor mode.
+- A dedicated verifier image must contain the grader package. The exporter
+  writes `tests/Dockerfile` with the package copied into `/tests`.
+
 ## Findings for upstream
 
 1. OpenCode V2 ATIF loses the `skill` tool input. `arguments` is `{"id":

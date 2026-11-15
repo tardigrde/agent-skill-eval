@@ -10,10 +10,17 @@ from agent_skill_eval.analysis import (
     compare_to_baseline,
     percentile,
     render_comparison_markdown,
+    safe_eval_dir,
     wilson_interval,
 )
 from agent_skill_eval.cli import app
 from agent_skill_eval.summary import _out_of_workspace, _tag_pass_rates, _trigger_rates
+
+
+def test_safe_eval_dir_rejects_path_traversal():
+    assert safe_eval_dir("1") == "eval-1"
+    assert safe_eval_dir("../../etc/passwd") == "eval-etc-passwd"
+    assert safe_eval_dir("a b") == "eval-a-b"
 
 
 def test_percentile_interpolates():

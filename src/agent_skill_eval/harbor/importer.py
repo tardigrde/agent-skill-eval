@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from agent_skill_eval.analysis import safe_eval_dir
 from agent_skill_eval.graders import grade_assertions, summarize_assertion_results
 from agent_skill_eval.harbor import harbor_version
 from agent_skill_eval.harbor.atif import (
@@ -47,12 +47,6 @@ def _ms(start: Optional[str], finish: Optional[str]) -> int:
     except ValueError:
         return 0
     return max(int(delta.total_seconds() * 1000), 0)
-
-
-def _safe_eval_dir(case_id: str) -> str:
-    """Keep a hostile eval id from writing outside the iteration directory."""
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(case_id)).strip("._-") or "case"
-    return f"eval-{slug}"
 
 
 def _artifact_workspace(trial_dir: Path, workdir: str) -> Path:
@@ -204,7 +198,7 @@ def import_job(
         workspace = _artifact_workspace(trial_dir, workdir)
         agent_output = raw_agent_text(trial_dir)
 
-        config_name = _safe_eval_dir(str(case_id))
+        config_name = safe_eval_dir(case_id)
         config_dir = iteration_dir / config_name / agent / ("with_skill" if with_skill else "without_skill")
         if runs > 1:
             config_dir = config_dir / f"run-{run_index}"

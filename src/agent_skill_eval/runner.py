@@ -16,7 +16,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from agent_skill_eval import __version__
-from agent_skill_eval.analysis import percentile, wilson_interval
+from agent_skill_eval.analysis import percentile, safe_eval_dir, wilson_interval
 from agent_skill_eval.fixtures import build_fixture_file_map
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider
 from agent_skill_eval.graders import DEFAULT_GRADER_MODEL, LLMGrader, grade_assertions, summarize_assertion_results
@@ -403,7 +403,7 @@ class EvalRunner:
         self._emit("run_started", **identity)
         record("run_started", **identity, side_effect_level=eval_case.side_effect_level)
 
-        eval_slug = f"eval-{eval_case.id}"
+        eval_slug = safe_eval_dir(eval_case.id)
         config_slug = "with_skill" if with_skill else "without_skill"
         agent_slug = agent_type.value
         config_dir = iteration_dir / eval_slug / agent_slug / config_slug

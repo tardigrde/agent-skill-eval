@@ -722,7 +722,9 @@ To debug a failure: find `"passed": false` entries, read `evidence`, compare `pr
   as "did not trigger".
 - `summary.out_of_workspace` counts runs whose ATIF tool calls touched paths
   outside the task workdir, with examples. It is a leak signal inside the
-  sandbox, not a hard failure.
+  sandbox, not a hard failure. ATIF lives in the agent's log directory, so a
+  hostile agent can forge it. Treat trigger and out-of-workspace numbers as
+  signals, not as hard scores; the importer checks the trajectory's agent name.
 - Runs with 0 output tokens, an invalid Harbor reward, or an agent-side
   exception are errors, never scores. They appear in `summary.errors`.
 

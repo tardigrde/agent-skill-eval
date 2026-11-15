@@ -5,10 +5,21 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 BASELINE_SCHEMA_VERSION = 1
+
+
+def safe_eval_dir(case_id: object) -> str:
+    """Return a filesystem-safe ``eval-<id>`` directory name.
+
+    Eval ids come from user suites and can contain path separators. The
+    original id stays in ``run_meta.json``; only the directory is sanitized.
+    """
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(case_id)).strip("._-") or "case"
+    return f"eval-{slug}"
 
 
 def percentile(values: list[float], q: float) -> float:
