@@ -35,6 +35,8 @@ trial = next(path for path in job_dir.iterdir() if path.is_dir())
 result = json.loads((trial / "result.json").read_text())
 result["config"]["agent"]["skills"] = ["/tmp/demo"] if with_skill else []
 (trial / "result.json").write_text(json.dumps(result))
+if os.environ.get("FAKE_FAIL_WITHOUT") and not with_skill:
+    sys.exit(3)
 """
 
 
@@ -274,3 +276,50 @@ def test_run_harbor_exports_runs_and_imports(tmp_path: Path, monkeypatch):
     jobs_root = iteration_dir / "harbor" / "jobs"
     assert (jobs_root / summary["run_id"]).is_dir()
     assert (jobs_root / second["run_id"]).is_dir()
+
+
+def _fake_harbor(tmp_path: Path, monkeypatch) -> Path:
+    monkeypatch.setenv("FAKE_JOB_TEMPLATE", str(_write_template(tmp_path)))
+    monkeypatch.setattr("agent_skill_eval.harbor.run.require_harbor", lambda: "0.26.0")
+    fake = tmp_path / "fake-harbor"
+    fake.write_text(f"#!{sys.executable}\n" + FAKE_HARBOR)
+    fake.chmod(0o755)
+    return fake
+
+
+def _options(tmp_path: Path, fake: Path, **kwargs) -> HarborRunOptions:
+    return HarborRunOptions(
+        evals_path=EVALS,
+        skill_path=SKILL,
+        workspace=tmp_path / "workspace",
+        agents=[AgentType.OPENCODE],
+        agent_models={AgentType.OPENCODE: "openrouter/deepseek/deepseek-v4.1-flash"},
+        harbor_bin=str(fake),
+        **kwargs,
+    )
+
+
+def test_missing_trials_are_reported_as_errors(tmp_path: Path, monkeypatch):
+    fake = _fake_harbor(tmp_path, monkeypatch)
+    # The fake writes one trial per job, but two attempts were requested.
+    iteration_dir = run_harbor(_options(tmp_path, fake, runs=2))
+
+    summary = json.loads((iteration_dir / "summary.json").read_text())
+    missing = [item for item in summary["errors"] if "no trial" in item["error"]]
+    runs = {item["run"] for item in missing}
+    assert {"content-contains-opencode-with-r2", "content-contains-opencode-without-r2"} <= runs
+    # The one trial the fake wrote is not reported as missing.
+    assert "content-contains-opencode-with-r1" not in runs
+
+
+def test_a_failed_arm_keeps_the_other_arm_and_fails_the_run(tmp_path: Path, monkeypatch):
+    fake = _fake_harbor(tmp_path, monkeypatch)
+    monkeypatch.setenv("FAKE_FAIL_WITHOUT", "1")
+
+    with pytest.raises(RuntimeError, match="without_skill"):
+        run_harbor(_options(tmp_path, fake))
+
+    summary = json.loads(
+        (tmp_path / "workspace" / "format-json-workspace" / "iteration-1" / "summary.json").read_text()
+    )
+    assert summary["pass_rates"]["opencode_with_skill"] == 1.0

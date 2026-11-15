@@ -89,6 +89,16 @@ def _arm_task_names(manifest: HarborExportManifest, with_skill: bool) -> list[st
     return sorted(task for task, arm in manifest.task_arms.items() if arm == "both" or arm == want)
 
 
+def _expected_run_keys(manifest: HarborExportManifest, agent: AgentType, with_skill: bool, runs: int) -> list[str]:
+    """Run keys the importer uses, for every trial Harbor should have produced."""
+    arm = "with" if with_skill else "without"
+    return [
+        f"{manifest.tasks[task]}-{agent.value}-{arm}-r{index}"
+        for task in _arm_task_names(manifest, with_skill)
+        for index in range(1, max(runs, 1) + 1)
+    ]
+
+
 def _job_config(
     *,
     job_name: str,
@@ -203,6 +213,8 @@ def run_harbor(options: HarborRunOptions) -> Path:
 
     started = time.time()
     job_dirs: list[Path] = []
+    expected_keys: list[str] = []
+    failed_jobs: list[str] = []
 
     for agent in options.agents:
         model = options.agent_models.get(agent)
@@ -231,11 +243,16 @@ def run_harbor(options: HarborRunOptions) -> Path:
             )
             config_path = configs_dir / f"{job_name}.yaml"
             _write_job_config(config_path, config)
-            subprocess.run([harbor_bin, "run", "-c", str(config_path), "--yes"], check=True)
+            expected_keys.extend(_expected_run_keys(manifest, agent, with_skill, options.runs))
+            completed = subprocess.run([harbor_bin, "run", "-c", str(config_path), "--yes"], check=False)
             job_dir = jobs_dir / job_name
-            if not (job_dir / "result.json").is_file():
+            if completed.returncode != 0:
+                failed_jobs.append(f"{job_name} (exit {completed.returncode})")
+            # Keep results from arms that did finish, even if another arm failed.
+            if (job_dir / "result.json").is_file():
+                job_dirs.append(job_dir)
+            elif completed.returncode == 0:
                 raise RuntimeError(f"Harbor did not write a result for {job_name}: {job_dir}")
-            job_dirs.append(job_dir)
 
     results: dict[str, dict] = {}
     grader = _make_grader(options)
@@ -251,6 +268,12 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 run_id=run_id,
             )
         )
+
+    # A trial that Harbor dropped must show as an error. Otherwise pass^k and
+    # the intervals would use fewer runs than requested, with no warning.
+    for key in expected_keys:
+        if key not in results:
+            results[key] = {"error": "Harbor produced no trial for this run (missing from the job directory)"}
 
     benchmark = compute_benchmark(results, options.agents, options.with_baseline)
     with open(iteration_dir / "benchmark.json", "w", encoding="utf-8") as handle:
@@ -285,6 +308,12 @@ def run_harbor(options: HarborRunOptions) -> Path:
         hooks={},
     )
     write_run_summary(iteration_dir, summary)
+    if failed_jobs:
+        raise RuntimeError(
+            "Harbor exited with an error for: "
+            + ", ".join(failed_jobs)
+            + f". Partial results were written to {iteration_dir}."
+        )
     return iteration_dir
 
 

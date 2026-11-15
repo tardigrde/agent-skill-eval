@@ -163,6 +163,47 @@ def executed_commands(trajectory: Optional[dict[str, Any]]) -> list[str]:
     return commands
 
 
+_TEST_FAILURE_MARKERS = (" failed", "failure", "traceback", "panic:", "error:")
+_TEST_PASS_MARKERS = (" passed", "all tests passed", "test result: ok", "build succeeded", "tests passed", "ok ")
+
+
+def has_trajectory(trajectory: Optional[dict[str, Any]]) -> bool:
+    """True when ATIF exists and has at least one step."""
+    return bool(trajectory and trajectory.get("steps"))
+
+
+def tests_pass_from_trajectory(
+    trajectory: Optional[dict[str, Any]],
+    command: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Judge a ``tests_pass`` check from the output of shell tool calls only.
+
+    The agent's own final text is not evidence. The last matching command
+    decides. Harbor's ATIF has no exit code, so output markers are used.
+    """
+    wanted = (command or "").lower()
+    matches: list[ToolCall] = []
+    for call in tool_calls(trajectory):
+        if call.name not in _SHELL_TOOLS:
+            continue
+        value = call.arguments.get("command") or call.arguments.get("cmd") or call.arguments.get("command_line")
+        if isinstance(value, list):
+            value = " ".join(str(part) for part in value)
+        if not isinstance(value, str):
+            continue
+        if wanted and wanted not in value.lower():
+            continue
+        matches.append(call)
+    if not matches:
+        return False, f"No test command found in ATIF tool calls{': ' + command if command else ''}"
+    output = matches[-1].output.lower()
+    if any(marker in output for marker in _TEST_FAILURE_MARKERS):
+        return False, "Failure marker in the test command output"
+    if any(marker in output for marker in _TEST_PASS_MARKERS):
+        return True, "Pass marker in the test command output"
+    return False, "No test pass marker in the test command output"
+
+
 def transcript(trajectory: Optional[dict[str, Any]]) -> str:
     if not trajectory:
         return ""

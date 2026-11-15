@@ -382,3 +382,83 @@ def test_import_grades_command_ran_from_atif(tmp_path: Path):
     run = results["hello-opencode-with-r1"]
     assert run["grading"]["summary"]["passed"] == 1
     assert run["skill_invoked"] is False
+
+
+def _import_one(tmp_path: Path, **job_kwargs):
+    job_dir = _write_job(tmp_path, **job_kwargs)
+    results = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+    )
+    return results["hello-opencode-with-r1"]
+
+
+def test_command_not_ran_is_unknown_without_a_trajectory(tmp_path: Path):
+    run = _import_one(
+        tmp_path,
+        assertions=[{"type": "command_not_ran", "command": "git push"}],
+        deferred=[0],
+        trajectory={"schema_version": "ATIF-v1.7", "steps": []},
+    )
+    result = run["grading"]["assertion_results"][0]
+    assert result["skipped"] is True
+    assert result["passed"] is False
+
+
+def test_command_not_ran_still_passes_with_a_real_trajectory(tmp_path: Path):
+    trajectory = {
+        "schema_version": "ATIF-v1.7",
+        "steps": [
+            {
+                "step_id": 2,
+                "source": "agent",
+                "message": "ok",
+                "tool_calls": [{"tool_call_id": "c1", "function_name": "shell", "arguments": {"command": "ls"}}],
+            }
+        ],
+    }
+    run = _import_one(
+        tmp_path,
+        assertions=[{"type": "command_not_ran", "command": "git push"}],
+        deferred=[0],
+        trajectory=trajectory,
+    )
+    assert run["grading"]["assertion_results"][0]["passed"] is True
+
+
+def _shell_trajectory(command: str, output: str) -> dict:
+    return {
+        "schema_version": "ATIF-v1.7",
+        "steps": [
+            {
+                "step_id": 2,
+                "source": "agent",
+                "message": "All tests passed",
+                "tool_calls": [{"tool_call_id": "c1", "function_name": "shell", "arguments": {"command": command}}],
+                "observation": {"results": [{"source_call_id": "c1", "content": output}]},
+            }
+        ],
+    }
+
+
+def test_tests_pass_ignores_the_agent_claim(tmp_path: Path):
+    run = _import_one(
+        tmp_path,
+        assertions=[{"type": "tests_pass", "command": "pytest"}],
+        deferred=[0],
+        trajectory=_shell_trajectory("pytest -q", "1 failed, 2 passed"),
+    )
+    assert run["grading"]["assertion_results"][0]["passed"] is False
+
+
+def test_tests_pass_uses_the_test_command_output(tmp_path: Path):
+    run = _import_one(
+        tmp_path,
+        assertions=[{"type": "tests_pass", "command": "pytest"}],
+        deferred=[0],
+        trajectory=_shell_trajectory("pytest -q", "3 passed in 0.1s"),
+    )
+    assert run["grading"]["assertion_results"][0]["passed"] is True
