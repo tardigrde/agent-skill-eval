@@ -93,17 +93,21 @@ def _workspace_baseline(task_dir: Optional[Path]) -> Optional[HarborBaseline]:
         return None
 
 
-def _sanity_error(result: dict[str, Any], timing: TimingData) -> Optional[str]:
-    if not result.get("reward_valid", False):
-        return "Harbor marked the reward invalid"
-    if result.get("verifier_result") is None:
-        return "Harbor did not produce a verifier reward"
+def _sanity_error(result: dict[str, Any]) -> Optional[str]:
     exception = result.get("exception_info") or {}
     if exception:
         name = str(exception.get("exception_type") or "Exception")
         return f"{name}: {exception.get('exception_message', '')}".strip()
-    if timing.output_tokens == 0:
+    if not result.get("reward_valid", False):
+        return "Harbor marked the reward invalid"
+    if result.get("verifier_result") is None:
+        return "Harbor did not produce a verifier reward"
+    agent_result = result.get("agent_result") or {}
+    reported_output = agent_result.get("n_output_tokens")
+    if reported_output is not None and int(reported_output) == 0:
         return "Agent produced 0 output tokens"
+    if all(agent_result.get(key) is None for key in ("n_input_tokens", "n_cache_tokens", "n_output_tokens")):
+        return "Harbor reported no token telemetry"
     return None
 
 
@@ -250,7 +254,7 @@ def import_job(
 
         trajectory = load_trajectory(trial_dir)
         timing = _timing(result, trajectory)
-        error = _sanity_error(result, timing)
+        error = _sanity_error(result)
         run_key = f"{case_id}-{agent}-{'with' if with_skill else 'without'}-r{run_index}"
         if error:
             results[run_key] = {"error": error}

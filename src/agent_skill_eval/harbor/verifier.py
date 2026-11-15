@@ -23,6 +23,7 @@ from agent_skill_eval.graders import (
 from agent_skill_eval.harbor.baseline import (
     baseline_commit,
     baseline_commit_subject,
+    baseline_tree,
     baseline_violations,
     is_git_repo,
 )
@@ -113,8 +114,16 @@ def _git_prose(
     pre: Optional[GitStateSnapshot],
     post: Optional[GitStateSnapshot],
     should_trigger: bool,
+    baseline_trusted: bool,
 ) -> AssertionResult:
     text = assertion_text(assertion)
+    if not baseline_trusted:
+        return _result(
+            text,
+            False,
+            "Baseline commit tree does not match tests/baseline.json",
+            "git",
+        )
     if pre is None or post is None:
         return _result(
             text,
@@ -136,12 +145,18 @@ def _git_prose(
     return grader._check_assertion(assertion, _tests_dir(), "", workspace, should_trigger, diff)
 
 
-def _runtime_state(workspace: Path) -> tuple[Optional[GitStateSnapshot], Optional[GitStateSnapshot], bool]:
+def _runtime_state(
+    workspace: Path,
+    baseline: HarborBaseline,
+) -> tuple[Optional[GitStateSnapshot], Optional[GitStateSnapshot], bool, bool]:
     if not is_git_repo(workspace):
-        return None, None, False
+        return None, None, False, True
     sha = baseline_commit(workspace)
     if not sha:
-        return None, None, False
+        return None, None, False, True
+    trusted = True
+    if baseline.tree_hash:
+        trusted = baseline_tree(workspace, sha) == baseline.tree_hash
     subject = baseline_commit_subject(workspace, sha)
     pre = GitStateSnapshot(
         local_branches=["main"],
@@ -153,7 +168,7 @@ def _runtime_state(workspace: Path) -> tuple[Optional[GitStateSnapshot], Optiona
         branch_heads={"main": sha},
     )
     post = capture_git_state(workspace)
-    return pre, post, True
+    return pre, post, True, trusted
 
 
 def _ensure_git_safe(workspace: Path) -> None:
@@ -198,7 +213,7 @@ def grade(case: dict[str, Any], baseline: HarborBaseline) -> tuple[list[Assertio
     assertions: list[Any] = case.get("assertions") or []
     deferred = {int(index) for index in case.get("deferred") or []}
     should_trigger = bool(case.get("should_trigger", True))
-    pre, post, has_git = _runtime_state(workspace)
+    pre, post, has_git, baseline_trusted = _runtime_state(workspace, baseline)
     grader = DeterministicGrader(pre_state=pre, post_state=post)
     if pre is not None and post is not None:
         grader.pre_state = pre
@@ -223,7 +238,15 @@ def grade(case: dict[str, Any], baseline: HarborBaseline) -> tuple[list[Assertio
             elif structured is not None and structured.type == "git_clean":
                 result = _git_clean(structured, workspace, baseline, grader)
             elif isinstance(assertion, str) and _GIT_PROSE.intersection(_route_names(assertion)):
-                result = _git_prose(assertion, workspace, grader, pre, post, should_trigger)
+                result = _git_prose(
+                    assertion,
+                    workspace,
+                    grader,
+                    pre,
+                    post,
+                    should_trigger,
+                    baseline_trusted,
+                )
             else:
                 result = grader.check_one(
                     assertion,
@@ -254,6 +277,7 @@ def grade(case: dict[str, Any], baseline: HarborBaseline) -> tuple[list[Assertio
         "assertions": details,
         "summary": summary.model_dump(mode="json"),
         "has_git": has_git,
+        "baseline_trusted": baseline_trusted,
         "git_probe": _git_probe(workspace),
         "baseline_violations": baseline_violations(workspace, baseline),
     }

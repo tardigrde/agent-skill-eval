@@ -32,7 +32,7 @@ def _manifest(tmp_path: Path) -> HarborExportManifest:
 def _write_job(
     tmp_path: Path,
     *,
-    output_tokens: int = 10,
+    output_tokens: int | None = 10,
     exception: dict | None = None,
     assertions: list | None = None,
     deferred: list[int] | None = None,
@@ -192,6 +192,19 @@ def test_import_treats_zero_output_tokens_as_an_error(tmp_path: Path):
 
     assert "error" in results["hello-opencode-with-r1"]
     assert "0 output tokens" in results["hello-opencode-with-r1"]["error"]
+
+
+def test_import_does_not_treat_unknown_output_tokens_as_zero(tmp_path: Path):
+    job_dir = _write_job(tmp_path, output_tokens=None)
+    results = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+    )
+
+    assert "grading" in results["hello-opencode-with-r1"]
 
 
 def test_import_treats_agent_side_exceptions_as_errors(tmp_path: Path):

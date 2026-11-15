@@ -850,10 +850,12 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
     k = max(len(v) for v in by_eval.values())
     pass_at_k = sum(1 for v in by_eval.values() if any(v)) / len(by_eval)
     # pass^k: all attempts for one case must pass. Cases with fewer than k
-    # observed runs (errors were excluded upstream) count as incomplete and
-    # are reported through the run count, not silently promoted.
-    pass_hat = [all(v) and len(v) == k for v in by_eval.values()]
-    pass_hat_k = sum(pass_hat) / len(pass_hat)
+    # observed runs (errors were excluded upstream) are incomplete: they are
+    # left out of the denominator instead of counting as failures.
+    complete = [v for v in by_eval.values() if len(v) == k]
+    incomplete = len(by_eval) - len(complete)
+    pass_hat = [all(v) for v in complete]
+    pass_hat_k = sum(pass_hat) / len(pass_hat) if pass_hat else 0.0
     wilson_low, wilson_high = wilson_interval(sum(pass_hat), len(pass_hat))
 
     return BenchmarkStats(
@@ -868,6 +870,7 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
         pass_hat_k_wilson_low=round(wilson_low, 4),
         pass_hat_k_wilson_high=round(wilson_high, 4),
         cases=len(by_eval),
+        incomplete_cases=incomplete,
         skipped_assertions=skipped,
         k=k,
     )

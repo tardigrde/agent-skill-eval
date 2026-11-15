@@ -106,6 +106,21 @@ def baseline_commit(workspace: Path) -> Optional[str]:
     return roots[-1] if roots else None
 
 
+def baseline_tree(workspace: Path, sha: str) -> Optional[str]:
+    """Return the git tree hash of a commit, or None when it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", f"{sha}^{{tree}}"],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() or None
+
+
 def baseline_commit_subject(workspace: Path, sha: str) -> str:
     """Return the short log line for the baseline commit."""
     try:

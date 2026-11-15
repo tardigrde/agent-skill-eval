@@ -80,6 +80,8 @@ class EvalCase(BaseModel):
     def validate_contradiction(self) -> EvalCase:
         if self.force_skill_invocation and not self.should_trigger:
             raise ValueError("Contradiction: force_skill_invocation=True cannot be set when should_trigger=False.")
+        if not self.tags:
+            self.tags = ["correctness"]
         return self
 
 
@@ -351,6 +353,9 @@ class BenchmarkStats(BaseModel):
     pass_hat_k_wilson_high: float = 0.0
     # Number of distinct eval cases in the group.
     cases: int = 0
+    # Cases with fewer than k observed runs (errors were excluded upstream).
+    # They are left out of pass^k instead of counting as failures.
+    incomplete_cases: int = 0
     # Assertions that were skipped (grader unavailable), summed over runs.
     skipped_assertions: int = 0
     k: int = 1

@@ -1800,7 +1800,14 @@ def _benchmark_rows(benchmark: dict) -> list[tuple[str, ...]]:
         hat = stats.get("pass_hat_k", stats.get("full_pass_rate", 0.0))
         low = stats.get("pass_hat_k_wilson_low", 0.0)
         high = stats.get("pass_hat_k_wilson_high", 1.0)
-        pass_hat = f"{hat:.0%} [{low:.0%}-{high:.0%}] k={stats.get('k', 1)}"
+        cases = stats.get("cases")
+        incomplete = stats.get("incomplete_cases", 0)
+        if cases == 0:
+            pass_hat = f"n/a ({incomplete} incomplete)"
+        elif cases is None:
+            pass_hat = f"{hat:.0%} [{low:.0%}-{high:.0%}] k={stats.get('k', 1)}"
+        else:
+            pass_hat = f"{hat:.0%} [{low:.0%}-{high:.0%}] n={cases - incomplete} k={stats.get('k', 1)}"
         rows.append(
             (
                 config,

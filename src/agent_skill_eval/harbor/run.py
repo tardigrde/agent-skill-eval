@@ -193,6 +193,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
             job_dirs.append(job_dir)
 
     results: dict[str, dict] = {}
+    grader = _make_grader(options)
     for job_dir in job_dirs:
         results.update(
             import_job(
@@ -201,7 +202,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 iteration_dir=iteration_dir,
                 iteration=options.iteration,
                 runs=options.runs,
-                llm_grader=_make_grader(options),
+                llm_grader=grader,
             )
         )
 

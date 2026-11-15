@@ -117,6 +117,22 @@ def test_negative_control_fails_when_a_commit_is_created(tmp_path: Path):
     assert "new commit" in results[0].evidence.lower()
 
 
+def test_forged_baseline_marker_is_not_trusted(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    (workspace / "new.txt").write_text("new\n")
+    subprocess.run(["git", "-C", str(workspace), "add", "new.txt"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "commit", "-qm", "agent commit"], check=True)
+    new_sha = subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True).strip()
+    (workspace / ".git" / "eval-baseline").write_text(new_sha + "\n")
+
+    case = _case(workspace, ["A git commit was created"], should_trigger=False)
+    results, payload = grade(case, baseline)
+
+    assert results[0].passed is False
+    assert "does not match" in results[0].evidence
+    assert payload["baseline_trusted"] is False
+
+
 def test_deferred_assertions_are_skipped_in_the_verifier(tmp_path: Path):
     workspace, baseline = _make_workspace(tmp_path)
     case = _case(workspace, ["The output contains `formatted-json-ok`"], deferred=[0])
