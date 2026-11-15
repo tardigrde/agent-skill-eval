@@ -69,7 +69,7 @@ def build_baseline(fixture_map: dict[str, Path], workdir: str = "/app") -> Harbo
             for parent in Path(target).parents:
                 if parent.as_posix() != ".":
                     dirs.add(parent.as_posix())
-        tree_hash = _git_tree_hash(root) if files else None
+        tree_hash = _git_tree_hash(root)
 
     return HarborBaseline(
         workdir=workdir,

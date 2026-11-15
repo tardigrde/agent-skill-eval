@@ -126,7 +126,7 @@ def export_suite(
     skill_path = skill_path.resolve()
     out_dir = out_dir.resolve()
 
-    if not _WORKDIR_RE.fullmatch(workdir) or ".." in Path(workdir).parts:
+    if workdir == "/" or not _WORKDIR_RE.fullmatch(workdir) or ".." in Path(workdir).parts:
         raise ValueError("--workdir must be an absolute POSIX path inside the container")
     if not _IMAGE_RE.fullmatch(base_image):
         raise ValueError("--base-image contains unsupported characters")
