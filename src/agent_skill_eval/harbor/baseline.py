@@ -35,7 +35,9 @@ def _sha256(path: Path) -> str:
 
 
 def _mode(path: Path) -> int:
-    return path.stat().st_mode & 0o777
+    # Record only the executable bit git tracks. A checkout's group-write
+    # bit depends on umask and would make golden files machine-specific.
+    return 0o755 if path.stat().st_mode & 0o111 else 0o644
 
 
 def _git_baseline(root: Path) -> tuple[Optional[str], Optional[str]]:
