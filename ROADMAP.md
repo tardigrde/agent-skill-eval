@@ -2,6 +2,22 @@
 
 Planned harness improvements, distilled from running real eval suites against side-effect-heavy skills. Ordered roughly by value-to-effort; items are independent unless noted.
 
+## Done
+
+### Harbor backend (issue #17)
+
+Harbor is the recommended backend for isolated runs. `agent-skill-eval export-harbor`
+writes one task per case; `run --backend harbor` runs both arms as Harbor jobs and
+imports the results. The native runner stays as the unisolated quick mode. See
+`docs/adr/0001-harbor-backend.md`.
+
+### Skill-centric analysis
+
+Case tags (`correctness`, `skill_effect`, `judge`), pass^k with Wilson intervals,
+median and p90 tokens/cost/time, trigger-rate split into positive cases and
+negative controls, out-of-workspace access from ATIF, and `--write-baseline` /
+`--compare` with per-case bootstrap intervals.
+
 ## 1. Record a skill content hash in run artifacts
 
 **What:** Hash the skill's content (SKILL.md plus bundled resources) at run time and record it in `run_meta.json` and `evals_meta.json`. `compare` warns when the hash differs between the iterations being compared.
