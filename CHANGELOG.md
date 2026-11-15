@@ -6,6 +6,21 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.11.2 (2026-11-15)
+
+### Bug Fixes
+
+- **harbor**: Treat missing command evidence as unknown, detect missing trials
+  ([`9d37795`](https://github.com/tardigrde/agent-skill-eval/commit/9d3779571ce8c8cf5cc43ac8e903fd2d80daf09d))
+
+- command_ran/command_not_ran/tests_pass use ATIF only; no trajectory means skipped, not a vacuous
+  pass - tests_pass reads the test command output from ATIF, not the agent's final text - missing
+  trials show as errors so pass^k does not silently use fewer runs - a failed arm no longer discards
+  the other arm's results; the run still fails - CI installs the harbor extra on Python 3.12+
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.11.1 (2026-11-15)
 
 ### Bug Fixes
