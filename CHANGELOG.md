@@ -6,6 +6,27 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.10.0 (2026-11-15)
+
+### Features
+
+- **harbor**: Run paired evaluations and import Harbor jobs
+  ([`e214008`](https://github.com/tardigrde/agent-skill-eval/commit/e21400885042bec79dd37a72368c11e05f3c3054))
+
+- add --backend harbor to the run command - export the suite, build one job per agent and arm, and
+  run harbor run - pin the error policy so agent-side failures are never valid rewards - set a 3x
+  agent setup timeout for CLI installs - import Harbor job directories into the native artifact
+  layout - merge verifier results with output-derived assertions graded from ATIF - read trigger
+  state, executed commands, and out-of-workspace access from ATIF - treat 0 output tokens, invalid
+  rewards, and agent exceptions as errors - record Harbor version, model, tokens, cost, and phase
+  timings - add recorded job-directory fixtures and a fake-Harbor integration test
+
+### Testing
+
+- **harbor**: Make recorded job fixtures self-contained
+  ([`6657a89`](https://github.com/tardigrde/agent-skill-eval/commit/6657a898c08659e4a921b55874cf9845cad498bc))
+
+
 ## v0.9.0 (2026-11-15)
 
 ### Documentation
