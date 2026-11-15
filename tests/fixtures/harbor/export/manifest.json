@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "suite": "format-json",
+  "skill_name": "format-json",
+  "skill_frontmatter_name": "format-json",
+  "skill_hash": "7e4524b9f0362bfa685ad6e1a50840e3845fa8f53c17646d9d3b7914cccc0eb3",
+  "evals_path": "tests/fixtures/evals/format-json.json",
+  "out_dir": "/home/levente/projects/ai/evals/agent-skill-eval/tests/fixtures/harbor/export",
+  "workdir": "/app",
+  "base_image": "python:3.12-slim",
+  "task_version": "1.0",
+  "harbor_version": "0.26.0",
+  "cases": [
+    {
+      "case_id": "explicit-invoke",
+      "task_names": [
+        "case-explicit-invoke__with",
+        "case-explicit-invoke__without"
+      ],
+      "arm": "both",
+      "tags": [
+        "correctness"
+      ],
+      "should_trigger": true,
+      "force_skill_invocation": true,
+      "side_effect_level": "local-only"
+    },
+    {
+      "case_id": "negative-control",
+      "task_names": [
+        "case-negative-control"
+      ],
+      "arm": "both",
+      "tags": [
+        "correctness"
+      ],
+      "should_trigger": false,
+      "force_skill_invocation": false,
+      "side_effect_level": "local-only"
+    },
+    {
+      "case_id": "content-contains",
+      "task_names": [
+        "case-content-contains"
+      ],
+      "arm": "both",
+      "tags": [
+        "correctness"
+      ],
+      "should_trigger": true,
+      "force_skill_invocation": false,
+      "side_effect_level": "local-only"
+    }
+  ],
+  "tasks": {
+    "case-explicit-invoke__with": "explicit-invoke",
+    "case-explicit-invoke__without": "explicit-invoke",
+    "case-negative-control": "negative-control",
+    "case-content-contains": "content-contains"
+  },
+  "task_arms": {
+    "case-explicit-invoke__with": "with",
+    "case-explicit-invoke__without": "without",
+    "case-negative-control": "both",
+    "case-content-contains": "both"
+  }
+}

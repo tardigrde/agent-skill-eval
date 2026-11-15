@@ -270,11 +270,27 @@ def main(
 def run(
     skill: Path = typer.Option(..., "--skill", "-s", help="Path to skill directory containing SKILL.md"),
     evals: Path = typer.Option(..., "--evals", "-e", help="Path to evals.json file"),
+    backend: str = typer.Option(
+        "native",
+        "--backend",
+        help="Execution backend: native (host, not isolated) or harbor (Docker, isolated)",
+    ),
     agents: list[str] = typer.Option(
         ["opencode"],
         "--agent",
         "-a",
         help=f"Agent(s) to evaluate: {AGENT_CHOICES}",
+    ),
+    harbor_base_image: str = typer.Option(
+        "python:3.12-slim",
+        "--harbor-base-image",
+        help="Base image for exported Harbor tasks (must provide git and a POSIX shell)",
+    ),
+    harbor_workdir: str = typer.Option("/app", "--harbor-workdir", help="Working directory in Harbor tasks"),
+    harbor_task_version: str = typer.Option("1.0", "--harbor-task-version", help="Version written to task.toml"),
+    harbor_jobs_dir: Optional[Path] = typer.Option(None, "--harbor-jobs-dir", help="Directory for Harbor job results"),
+    harbor_bin: Optional[str] = typer.Option(
+        None, "--harbor-bin", help="Harbor CLI executable (default: find 'harbor' on PATH)"
     ),
     workspace: Path = typer.Option(
         Path.cwd() / "eval-workspace",
@@ -454,6 +470,79 @@ def run(
     )
 
     pricing = _load_pricing_config(pricing_config)
+
+    if backend not in {"native", "harbor"}:
+        console.print(f"[red]Unknown backend: {backend}. Use native or harbor.[/red]")
+        raise typer.Exit(2)
+
+    if backend == "harbor":
+        from agent_skill_eval.harbor.run import HarborRunOptions, run_harbor
+
+        if AgentType.FAKE in agent_types:
+            console.print("[red]The fake harness has no Harbor adapter. Choose opencode, claude-code, or codex.[/red]")
+            raise typer.Exit(1)
+        if source_repo:
+            console.print("[red]--source-repo is not supported with --backend harbor.[/red]")
+            raise typer.Exit(1)
+        if pre_run_commands or post_run_commands or post_grade_commands:
+            console.print("[yellow]Warning: run hooks are not applied with --backend harbor.[/yellow]")
+        if pricing_config:
+            console.print("[yellow]Warning: --pricing-config is not applied with --backend harbor.[/yellow]")
+        budget_requested = any(
+            value is not None
+            for value in (
+                max_input_tokens_per_case,
+                max_non_cached_input_tokens_per_case,
+                max_output_tokens_per_case,
+                max_reasoning_tokens_per_case,
+                max_total_tokens_per_case,
+                max_cost_per_case,
+                max_duration_per_case,
+            )
+        )
+        if budget_requested:
+            console.print("[yellow]Warning: budget checks are not applied with --backend harbor.[/yellow]")
+
+        try:
+            result_dir = run_harbor(
+                HarborRunOptions(
+                    evals_path=evals,
+                    skill_path=skill,
+                    workspace=workspace,
+                    iteration=iteration,
+                    agents=agent_types,
+                    agent_models=agent_model_map,
+                    runs=runs,
+                    concurrency=concurrency,
+                    with_baseline=baseline,
+                    grader_model=grader["model"],
+                    grader_base_url=grader["base_url"],
+                    grader_key_file=grader["key_file"],
+                    grader_allowed_models=grader["allowed_models"],
+                    eval_ids=eval_ids,
+                    side_effect_levels=side_effect_levels,
+                    base_image=harbor_base_image,
+                    workdir=harbor_workdir,
+                    task_version=harbor_task_version,
+                    harbor_bin=harbor_bin,
+                    jobs_dir=harbor_jobs_dir,
+                    reasoning_effort=reasoning_effort,
+                    agent_base_url=harness_base_url,
+                    agent_timeout=agent_timeout,
+                    agent_retries=agent_retries,
+                )
+            )
+        except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
+            console.print(f"[red]Harbor run failed: {e}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"\n[bold green]Done! Results in: {result_dir}[/bold green]")
+        if auto_cleanup:
+            console.print()
+            console.print("[yellow]Running cleanup...[/yellow]")
+            _cleanup_iteration(result_dir, workspace)
+            console.print("[green]Cleanup complete![/green]")
+        return
 
     try:
         runner = EvalRunner(

@@ -250,6 +250,7 @@ def grade(case: dict[str, Any], baseline: HarborBaseline) -> tuple[list[Assertio
         "case_id": case.get("case_id"),
         "task_name": case.get("task_name"),
         "workdir": case.get("workdir"),
+        "case": case,
         "assertions": details,
         "summary": summary.model_dump(mode="json"),
         "has_git": has_git,

@@ -1,0 +1,111 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "ses_e236e7ac3ffemQ0PZ8RRZjVl8R",
+  "agent": {
+    "name": "opencode-v2",
+    "version": "2.3.0",
+    "model_name": "openrouter/deepseek/deepseek-v4.1-flash"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Format {\"status\":\"formatted-json-ok\"}.\n"
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-15T00:18:08.258000+00:00",
+      "source": "agent",
+      "model_name": "openrouter/deepseek/deepseek-v4.1-flash",
+      "message": "",
+      "reasoning_content": "The user wants me to format JSON. There's a skill \"format-json\". Let me load it.\n\nActually the request: Format {\"status\":\"formatted-json-ok\"}. Let me load the skill to follow its workflow.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_b8be98304eac45d9aa21cdf1cf489858",
+          "function_name": "skill",
+          "arguments": {
+            "id": "format-json"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_b8be98304eac45d9aa21cdf1cf489858",
+            "content": "<skill_content name=\"format-json\">\n# Skill: format-json\n\n# Format JSON\n\nFormat valid compact JSON with two-space indentation and report `formatted-json-ok`.\n\nBase directory for this skill: /logs/agent/opencode-v2/xdg-config/opencode/skills/format-json\nRelative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\nNote: file list is sampled.\n\n<skill_files>\n</skill_files>\n</skill_content>"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 6085,
+        "completion_tokens": 39,
+        "cached_tokens": 1664,
+        "cost_usd": 0.000305319,
+        "extra": {
+          "reasoning_tokens": 49
+        }
+      },
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-15T00:18:09.142000+00:00",
+      "source": "agent",
+      "model_name": "openrouter/deepseek/deepseek-v4.1-flash",
+      "message": "",
+      "reasoning_content": "The skill says format with two-space indentation and report `formatted-json-ok`.\n\nLet me look at the skill files maybe? It says file list is sampled, empty. Let me just format.\n\nActually, maybe there's a script in the base directory. Let me check.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_8ee10285bc024f5c82c92d1b8fde9186",
+          "function_name": "read",
+          "arguments": {
+            "path": "/logs/agent/opencode-v2/xdg-config/opencode/skills/format-json"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_8ee10285bc024f5c82c92d1b8fde9186",
+            "content": "Read directory /logs/agent/opencode-v2/xdg-config/opencode/skills/format-json, entries 1-1\nSKILL.md"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 6289,
+        "completion_tokens": 58,
+        "cached_tokens": 6144,
+        "cost_usd": 0.000184326,
+        "extra": {
+          "reasoning_tokens": 59
+        }
+      },
+      "llm_call_count": 1
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-15T00:18:10.089000+00:00",
+      "source": "agent",
+      "model_name": "openrouter/deepseek/deepseek-v4.1-flash",
+      "message": "```json\n{\n  \"status\": \"formatted-json-ok\"\n}\n```\n\nformatted-json-ok",
+      "reasoning_content": "Only SKILL.md. So just format.\n\n{\"status\":\"formatted-json-ok\"} \u2192 \n{\n  \"status\": \"formatted-json-ok\"\n}\n\nAnd report formatted-json-ok.",
+      "metrics": {
+        "prompt_tokens": 6451,
+        "completion_tokens": 25,
+        "cached_tokens": 6400,
+        "cost_usd": 0.000156924,
+        "extra": {
+          "reasoning_tokens": 44
+        }
+      },
+      "llm_call_count": 1
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 18825,
+    "total_completion_tokens": 122,
+    "total_cached_tokens": 14208,
+    "total_cost_usd": 0.000646569,
+    "total_steps": 4
+  }
+}

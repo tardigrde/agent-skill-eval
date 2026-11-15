@@ -1,0 +1,41 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "ses_e236e6c68ffeE1Sbq8Xlv0hDH5",
+  "agent": {
+    "name": "opencode-v2",
+    "version": "2.3.0",
+    "model_name": "openrouter/deepseek/deepseek-v4.1-flash"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Format {\"status\":\"formatted-json-ok\"}.\n"
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-15T00:18:11.423000+00:00",
+      "source": "agent",
+      "model_name": "openrouter/deepseek/deepseek-v4.1-flash",
+      "message": "```json\n{\n  \"status\": \"formatted-json-ok\"\n}\n```",
+      "reasoning_content": "The user says: Format {\"status\":\"formatted-json-ok\"}.\n\nThis is a weird instruction. They want me to format this JSON? Let me just pretty-print it.\n\nMaybe they want the JSON formatted. Let me output it nicely.",
+      "metrics": {
+        "prompt_tokens": 5799,
+        "completion_tokens": 20,
+        "cached_tokens": 1920,
+        "cost_usd": 0.000809025,
+        "extra": {
+          "reasoning_tokens": 51
+        }
+      },
+      "llm_call_count": 1
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 5799,
+    "total_completion_tokens": 20,
+    "total_cached_tokens": 1920,
+    "total_cost_usd": 0.000809025,
+    "total_steps": 2
+  }
+}

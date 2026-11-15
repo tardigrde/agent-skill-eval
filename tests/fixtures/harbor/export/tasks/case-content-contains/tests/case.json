@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "case_id": "content-contains",
+  "task_name": "case-content-contains",
+  "workdir": "/app",
+  "assertions": [
+    "The output contains `formatted-json-ok`"
+  ],
+  "deferred": [
+    0
+  ],
+  "expected_output": "The output includes formatted-json-ok",
+  "should_trigger": true,
+  "force_skill_invocation": false,
+  "side_effect_contract": null,
+  "side_effect_level": "local-only",
+  "tags": [
+    "correctness"
+  ],
+  "skill_name": "format-json",
+  "skill_frontmatter_name": "format-json"
+}
