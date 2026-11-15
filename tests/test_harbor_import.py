@@ -213,6 +213,8 @@ def test_import_treats_agent_side_exceptions_as_errors(tmp_path: Path):
 
 def test_recorded_job_directories_import_without_docker(tmp_path: Path):
     manifest = load_manifest(RECORDED_EXPORT)
+    # The manifest is portable; resolve its export directory relative to the fixture.
+    manifest.out_dir = str(RECORDED_EXPORT)
     results: dict[str, dict] = {}
     for job in ("fixture-with", "fixture-without"):
         results.update(
