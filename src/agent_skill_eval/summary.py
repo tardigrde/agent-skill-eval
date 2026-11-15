@@ -78,9 +78,24 @@ def _cost_totals(timings: list[dict]) -> dict:
     }
 
 
-def _run_full_pass(run: dict) -> bool:
+def is_full_pass(run: dict) -> bool:
+    """True only when every assertion was graded and passed.
+
+    Old artifacts may lack ``failed``/``skipped``. Fall back to the pass rate
+    for them so historical summaries keep the same meaning.
+    """
     summary = (run.get("grading") or {}).get("summary") or {}
-    return bool(summary.get("total", 0) > 0 and summary.get("failed", 0) == 0 and summary.get("skipped", 0) == 0)
+    if summary.get("total", 0) <= 0:
+        return False
+    failed = summary.get("failed")
+    skipped = summary.get("skipped")
+    if failed is None or skipped is None:
+        return float(summary.get("pass_rate", 0.0)) >= 1.0
+    return failed == 0 and skipped == 0
+
+
+# Backward-compatible private name.
+_run_full_pass = is_full_pass
 
 
 def _stability_summary(completed: list[dict]) -> dict:
@@ -122,36 +137,92 @@ def _stability_summary(completed: list[dict]) -> dict:
     }
 
 
+def _empty_trigger_bucket() -> dict[str, int]:
+    return {"invoked": 0, "known": 0, "unknown": 0, "total": 0}
+
+
+def _trigger_bucket(entry: dict[str, int]) -> dict:
+    return {
+        "rate": round(entry["invoked"] / entry["known"], 4) if entry["known"] else None,
+        "invoked": entry["invoked"],
+        "known": entry["known"],
+        "unknown": entry["unknown"],
+        "total": entry["total"],
+    }
+
+
 def _trigger_rates(completed: list[dict]) -> dict:
-    """Skill-trigger rate per config.
+    """Skill-trigger rate per config, split by positive cases and controls.
 
     Only runs where the harness could prove invocation or non-invocation
     count in the denominator: unknown telemetry must not count as "did not
     trigger".
     """
-    groups: dict[str, dict[str, int]] = {}
+    groups: dict[str, dict] = {}
     for run in completed:
         config = f"{run.get('agent')}_{'with_skill' if run.get('with_skill') else 'without_skill'}"
-        entry = groups.setdefault(config, {"invoked": 0, "known": 0, "unknown": 0, "total": 0})
-        entry["total"] += 1
-        invoked = run.get("skill_invoked")
-        if invoked is None:
-            entry["unknown"] += 1
-            continue
-        entry["known"] += 1
-        if invoked:
-            entry["invoked"] += 1
+        entry = groups.setdefault(
+            config,
+            {**_empty_trigger_bucket(), "positive": _empty_trigger_bucket(), "negative": _empty_trigger_bucket()},
+        )
+        bucket = entry["positive"] if run.get("should_trigger", True) else entry["negative"]
+        for target in (entry, bucket):
+            target["total"] += 1
+            invoked = run.get("skill_invoked")
+            if invoked is None:
+                target["unknown"] += 1
+                continue
+            target["known"] += 1
+            if invoked:
+                target["invoked"] += 1
 
     rates = {}
     for config, entry in sorted(groups.items()):
         rates[config] = {
-            "rate": round(entry["invoked"] / entry["known"], 4) if entry["known"] else None,
-            "invoked": entry["invoked"],
-            "known": entry["known"],
-            "unknown": entry["unknown"],
-            "total": entry["total"],
+            **_trigger_bucket(entry),
+            "positive": _trigger_bucket(entry["positive"]),
+            "negative": _trigger_bucket(entry["negative"]),
         }
     return rates
+
+
+def _tag_pass_rates(completed: list[dict]) -> dict:
+    """Mean pass rate per (config, tag).
+
+    A case tag applies to all assertions in that case. Untagged results are
+    treated as ``correctness`` so old artifacts keep reporting.
+    """
+    groups: dict[str, dict[str, list[float]]] = {}
+    for run in completed:
+        config = f"{run.get('agent')}_{'with_skill' if run.get('with_skill') else 'without_skill'}"
+        tags = run.get("tags") or ["correctness"]
+        rate = (run.get("grading") or {}).get("summary", {}).get("pass_rate")
+        if rate is None:
+            continue
+        for tag in tags:
+            groups.setdefault(config, {}).setdefault(str(tag), []).append(float(rate))
+    return {
+        config: {tag: round(sum(values) / len(values), 4) for tag, values in sorted(tags.items())}
+        for config, tags in sorted(groups.items())
+    }
+
+
+def _out_of_workspace(completed: list[dict]) -> dict:
+    """Count out-of-workspace paths reported by the importer."""
+    groups: dict[str, dict] = {}
+    for run in completed:
+        config = f"{run.get('agent')}_{'with_skill' if run.get('with_skill') else 'without_skill'}"
+        entry = groups.setdefault(config, {"runs_with_access": 0, "total": 0, "examples": []})
+        entry["total"] += 1
+        paths = run.get("out_of_workspace") or []
+        if paths:
+            entry["runs_with_access"] += 1
+            for path in paths:
+                if path not in entry["examples"]:
+                    entry["examples"].append(path)
+    for entry in groups.values():
+        entry["examples"] = entry["examples"][:10]
+    return groups
 
 
 def build_run_summary(
@@ -230,6 +301,8 @@ def build_run_summary(
         "duration_seconds": round(duration_seconds, 1),
         "pass_rates": pass_rates,
         "trigger_rate": _trigger_rates(completed),
+        "tag_pass_rates": _tag_pass_rates(completed),
+        "out_of_workspace": _out_of_workspace(completed),
         "runs_completed": len(completed),
         "runs_failed_grading": len(failed_runs),
         "failed_runs": failed_runs,

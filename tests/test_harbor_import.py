@@ -235,6 +235,9 @@ def test_recorded_job_directories_import_without_docker(tmp_path: Path):
     assert without_skill["skill_invoked"] is None
     assert with_skill["timing"]["output_tokens"] == 122
     assert with_skill["timing"]["cost_usd"] is not None
+    assert with_skill["tags"] == ["correctness"]
+    assert with_skill["should_trigger"] is True
+    assert isinstance(with_skill["out_of_workspace"], list)
 
 
 def test_import_grades_command_ran_from_atif(tmp_path: Path):

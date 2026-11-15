@@ -71,7 +71,7 @@ def render_task_toml(
         "",
         "[metadata.skill_eval]",
         f"case_id = {toml_string(str(case.id))}",
-        f"tags = {toml_list(['correctness'])}",
+        f"tags = {toml_list(case.tags)}",
         f"should_trigger = {str(case.should_trigger).lower()}",
         f"force_skill_invocation = {str(case.force_skill_invocation).lower()}",
         f"side_effect_level = {toml_string(case.side_effect_level)}",

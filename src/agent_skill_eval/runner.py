@@ -16,6 +16,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from agent_skill_eval import __version__
+from agent_skill_eval.analysis import percentile, wilson_interval
 from agent_skill_eval.fixtures import build_fixture_file_map
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider
 from agent_skill_eval.graders import DEFAULT_GRADER_MODEL, LLMGrader, grade_assertions, summarize_assertion_results
@@ -38,7 +39,7 @@ from agent_skill_eval.models import (
 )
 from agent_skill_eval.progress import ProgressLog, format_tokens, run_label
 from agent_skill_eval.skills import SkillInstaller
-from agent_skill_eval.summary import build_run_summary, write_run_summary
+from agent_skill_eval.summary import build_run_summary, is_full_pass, write_run_summary
 from agent_skill_eval.validation import EvalSuiteValidationReport, load_and_validate_suite
 from agent_skill_eval.workspace import WorkspaceManager
 
@@ -543,6 +544,7 @@ class EvalRunner:
             agent_cli_version=self._cli_versions.get(agent_type),
             skill_invoked=skill_invoked,
             skill_invocation_evidence=skill_invocation_evidence,
+            tags=list(eval_case.tags),
         )
         meta_path = output_dir.parent / "run_meta.json"
         with open(meta_path, "w", encoding="utf-8") as f:
@@ -656,6 +658,8 @@ class EvalRunner:
                 "agent_output": agent_output[:2000],
                 "skill_invoked": skill_invoked,
                 "skill_invocation_evidence": skill_invocation_evidence,
+                "should_trigger": eval_case.should_trigger,
+                "tags": list(eval_case.tags),
             },
             "cleanup_entry": cleanup_entry,
         }
@@ -806,8 +810,17 @@ class EvalRunner:
 
 
 def _is_full_pass(result: dict) -> bool:
-    summary = result["grading"]["summary"]
-    return summary.get("total", 1) > 0 and summary.get("pass_rate", 0.0) >= 1.0
+    return is_full_pass(result)
+
+
+def _pair(values: list[float]) -> StatsPair:
+    return StatsPair(
+        mean=statistics.mean(values) if values else 0.0,
+        stddev=statistics.stdev(values) if len(values) > 1 else 0.0,
+        median=round(percentile(values, 0.5), 4),
+        p90=round(percentile(values, 0.9), 4),
+        n=len(values),
+    )
 
 
 def compute_stats(results: list[dict]) -> BenchmarkStats:
@@ -825,6 +838,7 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
     # (codex without --pricing-config), which must not average in as $0.
     # .get: timing.json from runs before cost_usd existed lacks the field.
     costs = [c for r in results if (c := r["timing"].get("cost_usd")) is not None]
+    skipped = sum(int((r["grading"]["summary"] or {}).get("skipped") or 0) for r in results)
 
     full_passes = [_is_full_pass(r) for r in results]
 
@@ -835,29 +849,26 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
         by_eval.setdefault(str(r.get("eval_id", "?")), []).append(fp)
     k = max(len(v) for v in by_eval.values())
     pass_at_k = sum(1 for v in by_eval.values() if any(v)) / len(by_eval)
+    # pass^k: all attempts for one case must pass. Cases with fewer than k
+    # observed runs (errors were excluded upstream) count as incomplete and
+    # are reported through the run count, not silently promoted.
+    pass_hat = [all(v) and len(v) == k for v in by_eval.values()]
+    pass_hat_k = sum(pass_hat) / len(pass_hat)
+    wilson_low, wilson_high = wilson_interval(sum(pass_hat), len(pass_hat))
 
     return BenchmarkStats(
-        pass_rate=StatsPair(
-            mean=statistics.mean(pass_rates) if pass_rates else 0.0,
-            stddev=statistics.stdev(pass_rates) if len(pass_rates) > 1 else 0.0,
-        ),
-        time_seconds=StatsPair(
-            mean=statistics.mean(times) if times else 0.0,
-            stddev=statistics.stdev(times) if len(times) > 1 else 0.0,
-        ),
-        tokens=StatsPair(
-            mean=statistics.mean(tokens) if tokens else 0.0,
-            stddev=statistics.stdev(tokens) if len(tokens) > 1 else 0.0,
-        ),
-        cost_usd=StatsPair(
-            mean=statistics.mean(costs),
-            stddev=statistics.stdev(costs) if len(costs) > 1 else 0.0,
-        )
-        if costs
-        else None,
+        pass_rate=_pair(pass_rates),
+        time_seconds=_pair(times),
+        tokens=_pair(tokens),
+        cost_usd=_pair(costs) if costs else None,
         cost_runs=len(costs),
         full_pass_rate=sum(full_passes) / len(full_passes),
         pass_at_k=pass_at_k,
+        pass_hat_k=round(pass_hat_k, 4),
+        pass_hat_k_wilson_low=round(wilson_low, 4),
+        pass_hat_k_wilson_high=round(wilson_high, 4),
+        cases=len(by_eval),
+        skipped_assertions=skipped,
         k=k,
     )
 

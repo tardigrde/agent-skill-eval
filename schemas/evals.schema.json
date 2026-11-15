@@ -78,6 +78,18 @@
             }
           ],
           "default": null
+        },
+        "tags": {
+          "items": {
+            "enum": [
+              "correctness",
+              "skill_effect",
+              "judge"
+            ],
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
         }
       },
       "required": [

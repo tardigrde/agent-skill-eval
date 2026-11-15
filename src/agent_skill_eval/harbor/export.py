@@ -158,7 +158,7 @@ def export_suite(
         fixture_map = build_fixture_file_map(evals_path.parent, case.files)
         task_base = safe_task_name(str(case.id))
         task_names: list[str] = []
-        tags = ["correctness"]
+        tags = list(case.tags)
 
         for task_name, arm, needs_prefix in _task_variants(case, task_base):
             prefix = prefix_text if needs_prefix else None
