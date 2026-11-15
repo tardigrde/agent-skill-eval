@@ -323,3 +323,19 @@ def test_a_failed_arm_keeps_the_other_arm_and_fails_the_run(tmp_path: Path, monk
         (tmp_path / "workspace" / "format-json-workspace" / "iteration-1" / "summary.json").read_text()
     )
     assert summary["pass_rates"]["opencode_with_skill"] == 1.0
+
+
+def test_pre_run_hook_failure_aborts_before_harbor(tmp_path: Path, monkeypatch):
+    from agent_skill_eval.hooks import HookError
+
+    fake = _fake_harbor(tmp_path, monkeypatch)
+    with pytest.raises(HookError):
+        run_harbor(_options(tmp_path, fake, pre_run_commands=["exit 3"]))
+    assert not list((tmp_path / "workspace").rglob("jobs/*/*"))
+
+
+def test_post_run_hook_is_recorded_in_the_summary(tmp_path: Path, monkeypatch):
+    fake = _fake_harbor(tmp_path, monkeypatch)
+    iteration_dir = run_harbor(_options(tmp_path, fake, post_run_commands=["echo done"]))
+    summary = json.loads((iteration_dir / "summary.json").read_text())
+    assert summary["hooks"]["post_run"][0]["exit_code"] == 0
