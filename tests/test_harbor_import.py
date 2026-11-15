@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agent_skill_eval.harbor.export import load_manifest
 from agent_skill_eval.harbor.importer import import_job
 from agent_skill_eval.harbor.models import HarborCase, HarborExportManifest
@@ -462,3 +464,68 @@ def test_tests_pass_uses_the_test_command_output(tmp_path: Path):
         trajectory=_shell_trajectory("pytest -q", "3 passed in 0.1s"),
     )
     assert run["grading"]["assertion_results"][0]["passed"] is True
+
+
+def _import_with(tmp_path: Path, **kwargs):
+    job_dir = _write_job(tmp_path)
+    return import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+        **kwargs,
+    )["hello-opencode-with-r1"]
+
+
+def test_budget_violation_fails_grading_and_flags_timing(tmp_path: Path):
+    from agent_skill_eval.models import BudgetConfig
+
+    run = _import_with(tmp_path, budget=BudgetConfig(max_total_tokens=5, action="fail"))
+    assert run["timing"]["budget_exceeded"] is True
+    last = run["grading"]["assertion_results"][-1]
+    assert last["method"] == "budget" and last["passed"] is False
+    on_disk = json.loads(
+        (tmp_path / "iteration" / "eval-hello" / "opencode" / "with_skill" / "grading.json").read_text()
+    )
+    assert on_disk["assertion_results"][-1]["method"] == "budget"
+
+
+def test_budget_warn_flags_but_does_not_fail(tmp_path: Path):
+    from agent_skill_eval.models import BudgetConfig
+
+    run = _import_with(tmp_path, budget=BudgetConfig(max_total_tokens=5, action="warn"))
+    assert run["timing"]["budget_exceeded"] is True
+    assert all(r["method"] != "budget" for r in run["grading"]["assertion_results"])
+
+
+def test_pricing_config_fills_a_missing_cost(tmp_path: Path):
+    job_dir = _write_job(tmp_path)
+    result_path = job_dir / "case-hello__abc123" / "result.json"
+    result = json.loads(result_path.read_text())
+    result["agent_result"]["cost_usd"] = None
+    result_path.write_text(json.dumps(result))
+
+    pricing = {"openrouter/deepseek/deepseek-v4.1-flash": {"prompt": 0.001, "completion": 0.01}}
+    run = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+        pricing=pricing,
+    )["hello-opencode-with-r1"]
+
+    # 100 input (50 cached, billed at the prompt rate) + 10 output.
+    assert run["timing"]["cost_usd"] == pytest.approx(100 * 0.001 + 10 * 0.01)
+    assert run["timing"]["cost_usd_source"] == "pricing-config"
+
+
+def test_post_grade_hook_adds_a_result(tmp_path: Path):
+    command = """python3 -c 'import json; print(json.dumps([{"text": "extra", "passed": False, "evidence": "x"}]))'"""
+    run = _import_with(tmp_path, post_grade_commands=[command], hook_env={"ASE_SKILL_NAME": "demo"})
+    last = run["grading"]["assertion_results"][-1]
+    assert last["text"] == "extra" and last["method"] == "hook"
+    assert (
+        tmp_path / "iteration" / "eval-hello" / "opencode" / "with_skill" / "outputs" / "post_grade_hooks.json"
+    ).is_file()

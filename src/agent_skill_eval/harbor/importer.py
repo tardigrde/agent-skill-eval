@@ -26,7 +26,9 @@ from agent_skill_eval.harbor.atif import (
     tests_pass_from_trajectory,
 )
 from agent_skill_eval.harbor.models import HarborExportManifest
-from agent_skill_eval.models import AssertionResult, GradingResult, RunMeta, TimingData
+from agent_skill_eval.harnesses import _rate
+from agent_skill_eval.hooks import apply_post_grade_hooks
+from agent_skill_eval.models import AssertionResult, BudgetConfig, GradingResult, RunMeta, TimingData
 
 HARBOR_AGENT_MAP = {
     "opencode-v2": "opencode",
@@ -126,6 +128,38 @@ def _command_kind(assertion: Any) -> Optional[str]:
     return None
 
 
+def _apply_pricing(timing: TimingData, model: str, pricing: Optional[dict[str, dict]]) -> None:
+    """Fill a missing cost from --pricing-config. Harbor's own cost wins."""
+    if timing.cost_usd is not None or not pricing or model not in pricing:
+        return
+    entry = pricing[model]
+    prompt = _rate(entry, "prompt")
+    completion = _rate(entry, "completion")
+    if prompt <= 0 and completion <= 0:
+        return
+    non_cached = timing.non_cached_input_tokens
+    if non_cached is None:
+        non_cached = max(timing.input_tokens - timing.cached_tokens, 0)
+    cache_read = _rate(entry, "input_cache_read") or prompt
+    timing.cost_usd = non_cached * prompt + timing.cached_tokens * cache_read + timing.output_tokens * completion
+    timing.cost_usd_source = "pricing-config"
+
+
+def _budget_verdict(grading: GradingResult, violations: list[str], budget: Optional[BudgetConfig]) -> GradingResult:
+    """Fail the grading when the budget was exceeded (action != warn)."""
+    if not violations or budget is None or budget.action == "warn":
+        return grading
+    results = list(grading.assertion_results) + [
+        AssertionResult(
+            text="The run stayed within its budget",
+            passed=False,
+            evidence="budget exceeded: " + "; ".join(violations),
+            method="budget",
+        )
+    ]
+    return GradingResult(assertion_results=results, summary=summarize_assertion_results(results))
+
+
 def _deferred_results(
     case: dict[str, Any],
     *,
@@ -208,6 +242,10 @@ def import_job(
     runs: int,
     llm_grader: Any = None,
     run_id: Optional[str] = None,
+    post_grade_commands: Optional[list[str]] = None,
+    hook_env: Optional[dict[str, str]] = None,
+    budget: Optional[BudgetConfig] = None,
+    pricing: Optional[dict[str, dict]] = None,
 ) -> dict[str, dict[str, Any]]:
     """Import one Harbor job and write the native per-run artifacts."""
     results: dict[str, dict[str, Any]] = {}
@@ -239,6 +277,12 @@ def import_job(
             if traj_agent and agent_info.get("name") and traj_agent != str(agent_info.get("name")):
                 trajectory = None
         timing = _timing(result, trajectory)
+        model = str(agent_config.get("model_name") or (agent_info.get("model_info") or {}).get("name") or "")
+        _apply_pricing(timing, model, pricing)
+        budget_violations = budget.violations(timing) if budget else []
+        if budget_violations and budget:
+            timing.budget_exceeded = True
+            timing.budget_reason = "; ".join(budget_violations)
         error = _sanity_error(result)
         run_key = f"{case_id}-{agent}-{'with' if with_skill else 'without'}-r{run_index}"
         if error:
@@ -329,7 +373,6 @@ def import_job(
             extra_allowed_prefixes=("/logs/agent/", "/runtime/skills/", "/root/.harbor/", "/root/.nvm/"),
         )
         tags = list(case.get("tags") or ["correctness"])
-        model = str(agent_config.get("model_name") or (agent_info.get("model_info") or {}).get("name") or "")
         meta = RunMeta(
             eval_id=case.get("case_id", case_id),
             agent=agent,
@@ -352,10 +395,37 @@ def import_job(
             tags=tags,
         )
 
-        with open(config_dir / "grading.json", "w", encoding="utf-8") as handle:
-            json.dump(grading.model_dump(), handle, indent=2)
         with open(config_dir / "run_meta.json", "w", encoding="utf-8") as handle:
             json.dump(meta.model_dump(), handle, indent=2)
+        grading_path = config_dir / "grading.json"
+        with open(grading_path, "w", encoding="utf-8") as handle:
+            json.dump(grading.model_dump(), handle, indent=2)
+
+        if post_grade_commands:
+            env = dict(hook_env or {})
+            env.update(
+                {
+                    "ASE_EVAL_ID": str(case.get("case_id", case_id)),
+                    "ASE_AGENT": agent,
+                    "ASE_WITH_SKILL": "1" if with_skill else "0",
+                    "ASE_RUN_INDEX": str(run_index),
+                    "ASE_WORKSPACE_PATH": str(workspace),
+                    "ASE_OUTPUT_DIR": str(output_dir),
+                    "ASE_TIMING_PATH": str(config_dir / "timing.json"),
+                    "ASE_RUN_META_PATH": str(config_dir / "run_meta.json"),
+                    "ASE_GRADING_PATH": str(grading_path),
+                }
+            )
+            grading, hook_records = apply_post_grade_hooks(post_grade_commands, env, grading)
+            with open(output_dir / "post_grade_hooks.json", "w", encoding="utf-8") as handle:
+                json.dump(hook_records, handle, indent=2)
+
+        grading = _budget_verdict(grading, budget_violations, budget)
+        with open(grading_path, "w", encoding="utf-8") as handle:
+            json.dump(grading.model_dump(), handle, indent=2)
+        # Timing is rewritten: pricing and the budget flag were set above.
+        with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
+            json.dump(timing.model_dump(), handle, indent=2)
         with open(output_dir / "harbor_trial.json", "w", encoding="utf-8") as handle:
             json.dump(
                 {

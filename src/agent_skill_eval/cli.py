@@ -488,25 +488,6 @@ def run(
         if source_repo:
             console.print("[red]--source-repo is not supported with --backend harbor.[/red]")
             raise typer.Exit(1)
-        if pre_run_commands or post_run_commands or post_grade_commands:
-            console.print("[yellow]Warning: run hooks are not applied with --backend harbor.[/yellow]")
-        if pricing_config:
-            console.print("[yellow]Warning: --pricing-config is not applied with --backend harbor.[/yellow]")
-        budget_requested = any(
-            value is not None
-            for value in (
-                max_input_tokens_per_case,
-                max_non_cached_input_tokens_per_case,
-                max_output_tokens_per_case,
-                max_reasoning_tokens_per_case,
-                max_total_tokens_per_case,
-                max_cost_per_case,
-                max_duration_per_case,
-            )
-        )
-        if budget_requested:
-            console.print("[yellow]Warning: budget checks are not applied with --backend harbor.[/yellow]")
-
         try:
             result_dir = run_harbor(
                 HarborRunOptions(
@@ -534,8 +515,17 @@ def run(
                     agent_base_url=harness_base_url,
                     agent_timeout=agent_timeout,
                     agent_retries=agent_retries,
+                    pre_run_commands=pre_run_commands,
+                    post_grade_commands=post_grade_commands,
+                    post_run_commands=post_run_commands,
+                    budget=budget,
+                    pricing=pricing,
                 )
             )
+        except HookError as e:
+            console.print(f"[red]{e}[/red]")
+            console.print("[red]Suite aborted by pre-run hook; no agent was run.[/red]")
+            raise typer.Exit(1)
         except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
             console.print(f"[red]Harbor run failed: {e}[/red]")
             raise typer.Exit(1)

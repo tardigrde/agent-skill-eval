@@ -201,3 +201,34 @@ def test_deferred_assertions_are_skipped_in_the_verifier(tmp_path: Path):
 
     assert results[0].skipped is True
     assert results[0].method == "deferred"
+
+
+def test_verifier_and_native_grader_agree_on_workspace_assertions(tmp_path: Path):
+    """Parity: the Harbor verifier and the native grader give the same verdicts."""
+    from agent_skill_eval.graders import grade_assertions
+
+    workspace, baseline = _make_workspace(tmp_path)
+    (workspace / "out.json").write_text('{"name": "demo", "items": [1, 2]}')
+    assertions = [
+        {"type": "file_exists", "path": "out.json"},
+        {"type": "file_exists", "path": "missing.txt"},
+        {"type": "file_not_exists", "path": "missing.txt"},
+        {"type": "file_not_exists", "path": "out.json"},
+        {"type": "file_contains", "path": "hello.txt", "text": "Hello"},
+        {"type": "file_contains", "path": "hello.txt", "text": "Goodbye"},
+        {"type": "file_not_contains", "path": "hello.txt", "text": "Goodbye"},
+        {"type": "json_path", "path": "out.json", "json_path": "$.name", "equals": "demo"},
+        {"type": "json_path", "path": "out.json", "json_path": "$.name", "equals": "other"},
+    ]
+
+    harbor_results, _payload = grade(_case(workspace, assertions), baseline)
+
+    output_dir = tmp_path / "native" / "outputs"
+    output_dir.mkdir(parents=True)
+    native = grade_assertions(assertions, "", output_dir, "", None, workspace=workspace)
+
+    harbor_verdicts = [(r.passed, r.skipped) for r in harbor_results]
+    native_verdicts = [(r.passed, r.skipped) for r in native.assertion_results]
+    assert harbor_verdicts == native_verdicts
+    assert any(passed for passed, _ in harbor_verdicts)
+    assert not all(passed for passed, _ in harbor_verdicts)

@@ -18,7 +18,8 @@ from agent_skill_eval.harbor import require_harbor
 from agent_skill_eval.harbor.export import export_suite
 from agent_skill_eval.harbor.importer import import_job
 from agent_skill_eval.harbor.models import HarborExportManifest
-from agent_skill_eval.models import AgentType
+from agent_skill_eval.hooks import run_suite_hooks
+from agent_skill_eval.models import AgentType, BudgetConfig
 from agent_skill_eval.runner import compute_benchmark
 from agent_skill_eval.skills import SkillInstaller
 from agent_skill_eval.summary import build_run_summary, write_run_summary
@@ -65,6 +66,11 @@ class HarborRunOptions:
     agent_base_url: Optional[str] = None
     agent_timeout: Optional[int] = None
     agent_retries: Optional[int] = None
+    pre_run_commands: list[str] = field(default_factory=list)
+    post_grade_commands: list[str] = field(default_factory=list)
+    post_run_commands: list[str] = field(default_factory=list)
+    budget: Optional[BudgetConfig] = None
+    pricing: dict[str, dict] = field(default_factory=dict)
 
 
 def _slug(value: str) -> str:
@@ -211,6 +217,25 @@ def run_harbor(options: HarborRunOptions) -> Path:
     }
     (iteration_dir / "evals_meta.json").write_text(json.dumps(evals_meta, indent=2), encoding="utf-8")
 
+    budget = options.budget if options.budget and options.budget.enabled else None
+    hook_env = {
+        "ASE_SKILL_NAME": skill_name,
+        "ASE_SKILL_HASH": skill_hash,
+        "ASE_SKILL_DIR": str(skill_path),
+        "ASE_EVALS_PATH": str(options.evals_path),
+        "ASE_ITERATION": str(options.iteration),
+        "ASE_ITERATION_DIR": str(iteration_dir),
+        "ASE_WORKSPACE_BASE": str(options.workspace),
+        "ASE_SOURCE_REPO": "",
+        "ASE_RUN_ID": run_id,
+        "ASE_EVAL_IDS": ",".join(case.case_id for case in manifest.cases),
+        "ASE_SIDE_EFFECT_LEVELS": ",".join(sorted({case.side_effect_level for case in manifest.cases})),
+    }
+    hook_records: dict[str, list[dict]] = {"pre_run": [], "post_run": []}
+    if options.pre_run_commands:
+        # A failing pre-run hook raises HookError before Harbor starts.
+        hook_records["pre_run"] = run_suite_hooks(options.pre_run_commands, hook_env, label="pre-run", fail_fast=True)
+
     started = time.time()
     job_dirs: list[Path] = []
     expected_keys: list[str] = []
@@ -266,6 +291,10 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 runs=options.runs,
                 llm_grader=grader,
                 run_id=run_id,
+                post_grade_commands=options.post_grade_commands,
+                hook_env=hook_env,
+                budget=budget,
+                pricing=options.pricing,
             )
         )
 
@@ -305,9 +334,16 @@ def run_harbor(options: HarborRunOptions) -> Path:
         cleanup=cleanup,
         skill_hash=skill_hash,
         skill_size=skill_size,
-        hooks={},
+        budget=budget.model_dump() if budget else None,
+        hooks=hook_records,
     )
     write_run_summary(iteration_dir, summary)
+    if options.post_run_commands:
+        hook_records["post_run"] = run_suite_hooks(
+            options.post_run_commands, hook_env, label="post-run", fail_fast=False
+        )
+        summary["hooks"] = hook_records
+        write_run_summary(iteration_dir, summary)
     if failed_jobs:
         raise RuntimeError(
             "Harbor exited with an error for: "

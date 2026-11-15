@@ -349,7 +349,7 @@ agent-skill-eval run \
 
 Key options:
 
-- `--backend`: `native` (host workspace, not isolated) or `harbor` (Docker, isolated). Harbor ignores `--source-repo`, budget checks, pricing, and lifecycle hooks; it prints a warning for each.
+- `--backend`: `native` (host workspace, not isolated) or `harbor` (Docker, isolated). Harbor rejects `--source-repo`. Budget checks, `--pricing-config`, and lifecycle hooks work on Harbor, but they run on the host after Harbor finishes. Post-grade hooks see the downloaded artifacts, not the container, and a `stop-suite` budget action only fails the run (it cannot stop trials that already ran).
 - `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable. With Harbor, use the provider-prefixed form (`openrouter/deepseek/deepseek-v4.1-flash`).
 - `--write-baseline` / `--compare`: write a baseline JSON after the run, or compare the run to an earlier baseline. The comparison includes per-config pass-rate, pass^k, token, cost, and time deltas, plus a per-case bootstrap interval, and is written to `comparison.json` and `comparison.md`.
 - `--reasoning-effort`: reasoning setting passed to agents that support it (codex: `model_reasoning_effort`, e.g. `minimal`/`low`/`medium`/`high`/`xhigh`). Without it, agents silently inherit their own local config (e.g. `~/.codex/config.toml`) — two machines can then benchmark different reasoning settings under the same command line. Agents without a pass-through flag print a warning and record `null`. The effective value lands in `run_meta.json`.
