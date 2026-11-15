@@ -1,0 +1,30 @@
+{
+  "case_id": "content-contains",
+  "task_name": "case-content-contains",
+  "workdir": "/app",
+  "assertions": [
+    {
+      "index": 0,
+      "text": "The output contains `formatted-json-ok`",
+      "passed": false,
+      "skipped": true,
+      "method": "deferred",
+      "evidence": "Output-derived assertion; graded by the importer",
+      "deferred": true
+    }
+  ],
+  "summary": {
+    "passed": 0,
+    "failed": 0,
+    "total": 1,
+    "pass_rate": 0.0,
+    "skipped": 1
+  },
+  "has_git": true,
+  "git_probe": {
+    "returncode": 0,
+    "commits": 1,
+    "stderr": ""
+  },
+  "baseline_violations": []
+}

@@ -43,7 +43,7 @@ from agent_skill_eval.models import (
 
 console = Console(stderr=True)
 
-DEFAULT_GRADER_MODEL = "deepseek/deepseek-v4-flash"
+DEFAULT_GRADER_MODEL = "deepseek/deepseek-v4.1-flash"
 OPENWEBUI_GRADER_BASE_URL = "http://localhost:8080/api"
 OPENWEBUI_GRADER_MODEL = "gemini-3.1-flash-lite"
 OPENWEBUI_GRADER_MODELS = (OPENWEBUI_GRADER_MODEL,)
