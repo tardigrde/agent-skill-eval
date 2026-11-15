@@ -8,15 +8,22 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent_skill_eval.analysis import safe_eval_dir
-from agent_skill_eval.graders import grade_assertions, summarize_assertion_results
+from agent_skill_eval.graders import (
+    assertion_text,
+    classify_assertion,
+    grade_assertions,
+    summarize_assertion_results,
+)
 from agent_skill_eval.harbor import harbor_version
 from agent_skill_eval.harbor.atif import (
     detect_trigger,
     executed_commands,
+    has_trajectory,
     load_trajectory,
     out_of_workspace_access,
     raw_agent_text,
     reasoning_tokens,
+    tests_pass_from_trajectory,
 )
 from agent_skill_eval.harbor.models import HarborExportManifest
 from agent_skill_eval.models import AssertionResult, GradingResult, RunMeta, TimingData
@@ -106,6 +113,19 @@ def _timing(result: dict[str, Any], trajectory: Optional[dict[str, Any]]) -> Tim
     )
 
 
+def _command_kind(assertion: Any) -> Optional[str]:
+    """Return the structured type for command-evidence assertions, else None."""
+    if isinstance(assertion, dict):
+        kind = str(assertion.get("type") or "")
+    else:
+        kind = str(getattr(assertion, "type", "") or "")
+    if kind in {"command_ran", "command_not_ran", "tests_pass"}:
+        return kind
+    if not kind and isinstance(assertion, str) and classify_assertion(assertion) == "command-ran":
+        return "command_ran"
+    return None
+
+
 def _deferred_results(
     case: dict[str, Any],
     *,
@@ -113,6 +133,7 @@ def _deferred_results(
     agent_output: str,
     output_dir: Path,
     llm_grader: Any,
+    trajectory: Optional[dict[str, Any]] = None,
 ) -> dict[int, AssertionResult]:
     indices = [int(index) for index in case.get("deferred") or []]
     assertions = case.get("assertions") or []
@@ -120,6 +141,28 @@ def _deferred_results(
     for index in indices:
         if not 0 <= index < len(assertions):
             continue
+        kind = _command_kind(assertions[index])
+        if kind is not None:
+            # Command evidence comes from ATIF only. Without it the result is
+            # unknown, never a vacuous pass (command_not_ran) or a guess.
+            text = assertion_text(assertions[index])
+            if not has_trajectory(trajectory):
+                results[index] = AssertionResult(
+                    text=text,
+                    passed=False,
+                    evidence="No ATIF trajectory; command evidence is unavailable",
+                    method="deferred",
+                    skipped=True,
+                )
+                continue
+            if kind == "tests_pass":
+                item = assertions[index]
+                command = item.get("command") if isinstance(item, dict) else getattr(item, "command", None)
+                passed, evidence = tests_pass_from_trajectory(trajectory, command)
+                results[index] = AssertionResult(
+                    text=text, passed=passed, evidence=evidence, method="structured:tests_pass"
+                )
+                continue
         # Grade one assertion per call. grade_assertions reorders its output
         # (deterministic, then LLM, then skipped), so zipping it with the
         # input indices would attach the wrong evidence to the wrong check.
@@ -258,6 +301,7 @@ def import_job(
                 agent_output=agent_output,
                 output_dir=output_dir,
                 llm_grader=llm_grader,
+                trajectory=trajectory,
             )
         )
 

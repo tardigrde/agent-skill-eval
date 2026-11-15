@@ -37,6 +37,9 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install Harbor (Python 3.12+ only)
+        if: matrix.python-version != '3.11'
+        run: pip install -e ".[harbor]"
       - run: pytest -v --junitxml=results.xml --cov=agent_skill_eval --cov-report=xml:coverage.xml
       - name: Upload test results
         if: always()
