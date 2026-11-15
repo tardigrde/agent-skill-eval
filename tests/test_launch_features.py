@@ -92,6 +92,32 @@ class TestPassAtK:
         assert stats.k == 1
         assert stats.pass_at_k == pytest.approx(stats.full_pass_rate) == pytest.approx(0.5)
 
+    def test_pass_hat_k_requires_every_attempt(self):
+        results = [
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 1.0, eval_id="e2"),
+            _result("opencode", True, 0.0, eval_id="e2"),
+        ]
+        stats = compute_stats(results)
+        assert stats.k == 2
+        assert stats.pass_at_k == pytest.approx(1.0)
+        assert stats.pass_hat_k == pytest.approx(0.5)
+        assert stats.pass_hat_k_wilson_low < 0.5 < stats.pass_hat_k_wilson_high
+        assert stats.cases == 2
+
+    def test_percentiles_are_recorded(self):
+        results = [
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 1.0, eval_id="e2"),
+            _result("opencode", True, 1.0, eval_id="e3"),
+        ]
+        stats = compute_stats(results)
+        assert stats.tokens.median == 100.0
+        assert stats.tokens.p90 == 100.0
+        assert stats.time_seconds.median == 1.0
+        assert stats.pass_rate.n == 3
+
 
 class TestSkippedGrading:
     def test_unknown_assertion_without_llm_grader_is_skipped_not_failed(self, tmp_path):

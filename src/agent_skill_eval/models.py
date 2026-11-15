@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SIDE_EFFECT_LEVELS = ("static", "local-only", "live-safe", "live-external")
 SideEffectLevel = Literal["static", "local-only", "live-safe", "live-external"]
+AssertionTag = Literal["correctness", "skill_effect", "judge"]
 
 
 class AgentType(str, Enum):
@@ -69,6 +70,11 @@ class EvalCase(BaseModel):
     stage_files: bool = False
     side_effect_level: SideEffectLevel = "local-only"
     side_effect_contract: Optional[SideEffectContract] = None
+    # Which question this case answers. ``correctness`` asks whether the
+    # output is right; ``skill_effect`` asks whether the skill changed the
+    # outcome; ``judge`` marks rubric-only cases. Tags are additive, so an
+    # existing suite without tags keeps the old behaviour.
+    tags: list[AssertionTag] = Field(default_factory=lambda: ["correctness"])
 
     @model_validator(mode="after")
     def validate_contradiction(self) -> EvalCase:
@@ -169,6 +175,7 @@ class RunMeta(BaseModel):
     # the harness exposed too little telemetry to decide (unknown, not false).
     skill_invoked: Optional[bool] = None
     skill_invocation_evidence: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class CleanupManifest(BaseModel):
@@ -338,12 +345,23 @@ class BenchmarkStats(BaseModel):
     full_pass_rate: float = 0.0
     # Fraction of evals where at least one of k runs fully passed.
     pass_at_k: float = 0.0
+    # Fraction of evals where ALL k runs fully passed (pass^k).
+    pass_hat_k: float = 0.0
+    pass_hat_k_wilson_low: float = 0.0
+    pass_hat_k_wilson_high: float = 0.0
+    # Number of distinct eval cases in the group.
+    cases: int = 0
+    # Assertions that were skipped (grader unavailable), summed over runs.
+    skipped_assertions: int = 0
     k: int = 1
 
 
 class StatsPair(BaseModel):
     mean: float
     stddev: float
+    median: float = 0.0
+    p90: float = 0.0
+    n: int = 0
 
 
 class BenchmarkResult(BaseModel):

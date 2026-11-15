@@ -321,6 +321,12 @@ def import_job(
                 skill_names=_skill_names(manifest, case),
             )
 
+        out_of_workspace = out_of_workspace_access(
+            trajectory,
+            workdir=workdir,
+            extra_allowed_prefixes=("/logs/agent/", "/runtime/skills/", "/root/.harbor/", "/root/.nvm/"),
+        )
+        tags = list(case.get("tags") or ["correctness"])
         model = str(agent_config.get("model_name") or (agent_info.get("model_info") or {}).get("name") or "")
         meta = RunMeta(
             eval_id=case.get("case_id", case_id),
@@ -340,6 +346,7 @@ def import_job(
             agent_cli_version=agent_info.get("version"),
             skill_invoked=triggered,
             skill_invocation_evidence=trigger_evidence,
+            tags=tags,
         )
 
         pre_state = None
@@ -364,7 +371,7 @@ def import_job(
                     "job_dir": str(job_dir),
                     "trial_dir": str(trial_dir),
                     "task_dir_name": task_dir_name,
-                    "out_of_workspace": out_of_workspace_access(trajectory, workdir=workdir),
+                    "out_of_workspace": out_of_workspace,
                 },
                 handle,
                 indent=2,
@@ -386,6 +393,9 @@ def import_job(
             "agent_output": agent_output[:2000],
             "skill_invoked": triggered,
             "skill_invocation_evidence": trigger_evidence,
+            "should_trigger": bool(case.get("should_trigger", True)),
+            "tags": tags,
+            "out_of_workspace": out_of_workspace,
         }
 
     return results

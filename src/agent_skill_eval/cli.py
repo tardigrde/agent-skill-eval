@@ -292,6 +292,10 @@ def run(
     harbor_bin: Optional[str] = typer.Option(
         None, "--harbor-bin", help="Harbor CLI executable (default: find 'harbor' on PATH)"
     ),
+    write_baseline: Optional[Path] = typer.Option(
+        None, "--write-baseline", help="Write a baseline JSON for a later --compare"
+    ),
+    compare_baseline: Optional[Path] = typer.Option(None, "--compare", help="Compare this run to a baseline JSON"),
     workspace: Path = typer.Option(
         Path.cwd() / "eval-workspace",
         "--workspace",
@@ -537,6 +541,7 @@ def run(
             raise typer.Exit(1)
 
         console.print(f"\n[bold green]Done! Results in: {result_dir}[/bold green]")
+        _apply_analysis_options(result_dir, write_baseline, compare_baseline)
         if auto_cleanup:
             console.print()
             console.print("[yellow]Running cleanup...[/yellow]")
@@ -585,12 +590,54 @@ def run(
         console.print("[red]Suite aborted by pre-run hook; no agent was run.[/red]")
         raise typer.Exit(1)
     console.print(f"\n[bold green]Done! Results in: {result_dir}[/bold green]")
+    _apply_analysis_options(result_dir, write_baseline, compare_baseline)
 
     if auto_cleanup:
         console.print()
         console.print("[yellow]Running cleanup...[/yellow]")
         _cleanup_iteration(result_dir, workspace)
         console.print("[green]Cleanup complete![/green]")
+
+
+def _apply_analysis_options(
+    result_dir: Path,
+    write_baseline: Optional[Path],
+    compare_baseline: Optional[Path],
+) -> None:
+    """Write and compare baselines after a run, for either backend."""
+    if not write_baseline and not compare_baseline:
+        return
+
+    from agent_skill_eval.analysis import (
+        build_baseline,
+        compare_to_baseline,
+        read_json,
+        render_comparison_markdown,
+        write_json,
+    )
+
+    summary_path = result_dir / "summary.json"
+    benchmark_path = result_dir / "benchmark.json"
+    if not summary_path.is_file() or not benchmark_path.is_file():
+        console.print(f"[yellow]No summary/benchmark in {result_dir}; analysis skipped.[/yellow]")
+        return
+    summary = read_json(summary_path)
+    benchmark = read_json(benchmark_path)
+
+    if write_baseline:
+        write_json(write_baseline, build_baseline(summary, benchmark))
+        console.print(f"[green]Baseline written to {write_baseline}[/green]")
+
+    if compare_baseline:
+        if not compare_baseline.is_file():
+            console.print(f"[red]Baseline not found: {compare_baseline}[/red]")
+            return
+        comparison = compare_to_baseline(summary, benchmark, read_json(compare_baseline))
+        write_json(result_dir / "comparison.json", comparison)
+        markdown = render_comparison_markdown(comparison)
+        (result_dir / "comparison.md").write_text(markdown, encoding="utf-8")
+        console.print(f"\n[bold]Baseline comparison[/bold] (written to {result_dir / 'comparison.md'})")
+        console.print(markdown)
 
 
 @app.command(name="export-harbor")
@@ -1740,7 +1787,7 @@ def _collect_results(workspace: Path) -> dict[str, dict]:
     return results
 
 
-def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str, str]]:
+def _benchmark_rows(benchmark: dict) -> list[tuple[str, ...]]:
     rows = []
     for config, stats in benchmark.get("run_summary", {}).items():
         pass_rate = stats.get("pass_rate", {})
@@ -1749,20 +1796,47 @@ def _benchmark_rows(benchmark: dict) -> list[tuple[str, str, str, str, str, str]
         # None/absent means cost is unavailable for these runs (e.g. codex
         # without --pricing-config), which is different from a real $0.
         cost = stats.get("cost_usd")
-        cost_str = f"{cost.get('mean', 0):.4f} +/- {cost.get('stddev', 0):.4f}" if cost else "n/a"
-        k = stats.get("k", 1)
-        pass_at_k = f"{stats.get('pass_at_k', 0):.0%} (k={k})" if k > 1 else f"{stats.get('full_pass_rate', 0):.0%}"
+        cost_str = f"{cost.get('median', 0):.4f} / {cost.get('p90', 0):.4f}" if cost else "n/a"
+        hat = stats.get("pass_hat_k", stats.get("full_pass_rate", 0.0))
+        low = stats.get("pass_hat_k_wilson_low", 0.0)
+        high = stats.get("pass_hat_k_wilson_high", 1.0)
+        pass_hat = f"{hat:.0%} [{low:.0%}-{high:.0%}] k={stats.get('k', 1)}"
         rows.append(
             (
                 config,
                 f"{pass_rate.get('mean', 0):.1%} +/- {pass_rate.get('stddev', 0):.1%}",
-                pass_at_k,
-                f"{time_s.get('mean', 0):.1f} +/- {time_s.get('stddev', 0):.1f}",
-                f"{tokens.get('mean', 0):.0f} +/- {tokens.get('stddev', 0):.0f}",
+                pass_hat,
+                f"{time_s.get('median', 0):.1f} / {time_s.get('p90', 0):.1f}",
+                f"{tokens.get('median', 0):.0f} / {tokens.get('p90', 0):.0f}",
+                str(stats.get("skipped_assertions", 0)),
                 cost_str,
             )
         )
     return rows
+
+
+def _analysis_lines(summary: dict) -> list[str]:
+    lines: list[str] = []
+    for config, trigger in (summary.get("trigger_rate") or {}).items():
+        positive = trigger.get("positive") or {}
+        negative = trigger.get("negative") or {}
+        lines.append(
+            f"`{config}` trigger: positive {positive.get('rate')} "
+            f"({positive.get('invoked')}/{positive.get('known')} known, "
+            f"{positive.get('unknown')} unknown); negative {negative.get('rate')} "
+            f"({negative.get('invoked')}/{negative.get('known')} known, "
+            f"{negative.get('unknown')} unknown)"
+        )
+    for config, tags in (summary.get("tag_pass_rates") or {}).items():
+        rendered = ", ".join(f"{tag} {rate:.1%}" for tag, rate in tags.items())
+        lines.append(f"`{config}` pass by tag: {rendered}")
+    for config, access in (summary.get("out_of_workspace") or {}).items():
+        examples = ", ".join((access.get("examples") or [])[:3])
+        lines.append(
+            f"`{config}` out-of-workspace: {access.get('runs_with_access')}/"
+            f"{access.get('total')} runs" + (f"; e.g. {examples}" if examples else "")
+        )
+    return lines
 
 
 def _delta_line(delta: dict) -> str:
@@ -1854,10 +1928,18 @@ def _compare_rows(benchmark_a: dict, benchmark_b: dict) -> list[dict]:
     return rows
 
 
-REPORT_COLUMNS = ["Configuration", "Pass Rate", "Full Pass / pass@k", "Time (s)", "Tokens", "Cost (USD)"]
+REPORT_COLUMNS = [
+    "Configuration",
+    "Pass Rate",
+    "pass^k [95% CI]",
+    "Time med/p90 (s)",
+    "Tokens med/p90",
+    "Skipped",
+    "Cost med/p90 (USD)",
+]
 
 
-def _print_markdown_report(iter_name: str, benchmark: dict) -> None:
+def _print_markdown_report(iter_name: str, benchmark: dict, summary: dict) -> None:
     print(f"\n### {iter_name}\n")
     print("| " + " | ".join(REPORT_COLUMNS) + " |")
     print("|" + "|".join([" --- "] * len(REPORT_COLUMNS)) + "|")
@@ -1868,13 +1950,18 @@ def _print_markdown_report(iter_name: str, benchmark: dict) -> None:
         print("\n**Delta (with_skill - without_skill):**\n")
         for agent, delta in deltas.items():
             print(f"- `{agent}`: {_delta_line(delta)}")
+    analysis = _analysis_lines(summary)
+    if analysis:
+        print("\n**Skill analysis:**\n")
+        for line in analysis:
+            print(f"- {line}")
 
 
 def _html(value) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _print_html_report(iter_name: str, benchmark: dict) -> None:
+def _print_html_report(iter_name: str, benchmark: dict, summary: dict) -> None:
     print(f'<section class="iteration"><h2>{_html(iter_name)}</h2>')
     print("<table><thead><tr>")
     for column in REPORT_COLUMNS:
@@ -1889,9 +1976,15 @@ def _print_html_report(iter_name: str, benchmark: dict) -> None:
         for agent, delta in deltas.items():
             print(f"<li><code>{_html(agent)}</code>: {_html(_delta_line(delta))}</li>")
         print("</ul>")
+    analysis = _analysis_lines(summary)
+    if analysis:
+        print("<h3>Skill analysis</h3><ul>")
+        for line in analysis:
+            print(f"<li>{_html(line)}</li>")
+        print("</ul>")
 
 
-def _print_table_report(iter_name: str, benchmark: dict) -> None:
+def _print_table_report(iter_name: str, benchmark: dict, summary: dict) -> None:
     console.print(f"\n[bold]{iter_name}[/bold]")
 
     table = Table(title="Results Summary")
@@ -1907,6 +2000,11 @@ def _print_table_report(iter_name: str, benchmark: dict) -> None:
         console.print("\n[bold]Delta (with_skill - without_skill):[/bold]")
         for agent, delta in deltas.items():
             console.print(f"  {agent}: {_delta_line(delta)}")
+    analysis = _analysis_lines(summary)
+    if analysis:
+        console.print("\n[bold]Skill analysis:[/bold]")
+        for line in analysis:
+            console.print(f"  {line}")
 
 
 def _print_eval_details(iter_dir: Path, show_evidence: bool, markdown: bool, failures_only: bool = False) -> None:
@@ -2373,15 +2471,20 @@ def report(
 
         with open(benchmark_path, encoding="utf-8") as f:
             benchmark = json.load(f)
+        summary = load_summary(iter_dir) or {}
 
         if fmt == "html":
-            _print_html_report(iter_dir.name, benchmark)
+            _print_html_report(iter_dir.name, benchmark, summary)
             _print_html_eval_details(iter_dir, show_evidence, failures_only=failures_only)
         elif markdown:
-            _print_markdown_report(iter_dir.name, benchmark)
+            _print_markdown_report(iter_dir.name, benchmark, summary)
             _print_eval_details(iter_dir, show_evidence, markdown, failures_only=failures_only)
+            comparison = iter_dir / "comparison.md"
+            if comparison.is_file():
+                print()
+                print(comparison.read_text(encoding="utf-8").strip())
         else:
-            _print_table_report(iter_dir.name, benchmark)
+            _print_table_report(iter_dir.name, benchmark, summary)
             _print_eval_details(iter_dir, show_evidence, markdown, failures_only=failures_only)
     if fmt == "html":
         print("</body></html>")
@@ -2411,11 +2514,18 @@ def _archive_report_markdown(iter_dir: Path) -> str:
         "",
         "## Benchmark",
         "",
-        "| Configuration | Pass Rate | Full Pass / pass@k | Time (s) | Tokens | Cost (USD) |",
-        "| --- | --- | --- | ---: | ---: | ---: |",
+        "| " + " | ".join(REPORT_COLUMNS) + " |",
+        "|" + "|".join([" --- "] * len(REPORT_COLUMNS)) + "|",
     ]
     for row in _benchmark_rows(benchmark):
         lines.append("| " + " | ".join(row) + " |")
+    analysis = _analysis_lines(summary)
+    if analysis:
+        lines.extend(["", "## Skill analysis", ""])
+        lines.extend(f"- {line}" for line in analysis)
+    comparison = iter_dir / "comparison.md"
+    if comparison.is_file():
+        lines.extend(["", comparison.read_text(encoding="utf-8").strip()])
     return "\n".join(lines) + "\n"
 
 
@@ -2458,7 +2568,15 @@ def archive_run(
     output.mkdir(parents=True)
 
     copied: list[str] = []
-    for name in ("summary.json", "benchmark.json", "cleanup.json", "evals_meta.json", "progress.jsonl"):
+    for name in (
+        "summary.json",
+        "benchmark.json",
+        "cleanup.json",
+        "evals_meta.json",
+        "progress.jsonl",
+        "comparison.json",
+        "comparison.md",
+    ):
         if _copy_artifact(iter_dir / name, output / name):
             copied.append(name)
     (output / "report.md").write_text(_archive_report_markdown(iter_dir), encoding="utf-8")
