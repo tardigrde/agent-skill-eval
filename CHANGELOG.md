@@ -6,6 +6,21 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.11.0 (2026-11-15)
+
+### Features
+
+- **harbor**: Add skill-centric analysis and baselines (M3)
+  ([`6cc54fc`](https://github.com/tardigrde/agent-skill-eval/commit/6cc54fc53d98c24ced55d9434c3ceb8d0a405ccc))
+
+- add case tags (correctness, skill_effect, judge) and per-tag pass rates - add pass^k with Wilson
+  intervals next to pass@k, plus median and p90 for tokens, cost, and wall time - split trigger rate
+  into positive cases and negative controls - aggregate out-of-workspace access from ATIF - add
+  --write-baseline and --compare with per-config and per-case deltas - show pass^k, percentiles,
+  trigger split, tags, and out-of-workspace in the table, Markdown, and HTML reports - keep legacy
+  benchmark files readable with defaults and fallbacks
+
+
 ## v0.10.0 (2026-11-15)
 
 ### Features
