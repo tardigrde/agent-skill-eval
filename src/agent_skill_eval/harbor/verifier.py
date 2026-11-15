@@ -25,6 +25,7 @@ from agent_skill_eval.harbor.baseline import (
     baseline_commit_subject,
     baseline_tree,
     baseline_violations,
+    is_ancestor,
     is_git_repo,
 )
 from agent_skill_eval.harbor.models import HarborBaseline
@@ -137,7 +138,7 @@ def _git_prose(
             "Git history is unavailable in the worktree",
             "git",
         )
-    if pre.head_sha and pre.head_sha not in post.commit_shas:
+    if pre.head_sha and not is_ancestor(workspace, pre.head_sha):
         return _result(
             text,
             False,
@@ -191,9 +192,16 @@ def _side_effect_contract(
     evidence: list[str] = []
 
     violations = baseline_violations(workspace, baseline)
-    if violations and not contract.get("allow_worktree_changes", True):
-        problems.append("worktree changes are not allowed")
-        evidence.extend(violations)
+    if not contract.get("allow_worktree_changes", True):
+        if violations:
+            problems.append("worktree changes are not allowed")
+            evidence.extend(violations)
+        # A new symlink is deliberately skipped by the hash walk. Git still
+        # reports it as untracked, so use the status snapshot as well.
+        if post is not None and post.status_porcelain:
+            if "worktree changes are not allowed" not in problems:
+                problems.append("worktree changes are not allowed")
+            evidence.extend(post.status_porcelain[:20])
     if not baseline_trusted:
         problems.append("baseline commit tree does not match tests/baseline.json")
 

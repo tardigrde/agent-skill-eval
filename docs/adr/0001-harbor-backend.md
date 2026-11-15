@@ -186,7 +186,10 @@ Reasons for the host-side judge:
 - our report already owns scoring.
 
 Consequence: Harbor's `reward.json` holds deterministic results only. The
-`agent-skill-eval` report is the product.
+`agent-skill-eval` report is the product. The importer writes `evals_meta.json`,
+`outputs/output.txt`, and the artifact workspace path, so `grade` can change the
+judge without rerunning agents. It re-runs deterministic assertions as well;
+use the saved `grading.json` when only the judge changed.
 
 The judge model is a per-suite field. Warn when the judge and the agent share a
 provider or family. The current default judge and the proof-run agent are both

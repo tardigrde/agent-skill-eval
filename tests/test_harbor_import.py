@@ -253,6 +253,100 @@ def test_recorded_job_directories_import_without_docker(tmp_path: Path):
     assert isinstance(with_skill["out_of_workspace"], list)
 
 
+def test_missing_reward_details_is_an_error(tmp_path: Path):
+    job_dir = _write_job(tmp_path)
+    trial = next(path for path in job_dir.iterdir() if path.is_dir())
+    (trial / "verifier" / "reward-details.json").unlink()
+
+    results = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+    )
+
+    assert "error" in results["hello-opencode-with-r1"]
+    assert "missing" in results["hello-opencode-with-r1"]["error"]
+
+
+def test_partial_reward_details_is_an_error(tmp_path: Path):
+    job_dir = _write_job(tmp_path)
+    trial = next(path for path in job_dir.iterdir() if path.is_dir())
+    details_path = trial / "verifier" / "reward-details.json"
+    details = json.loads(details_path.read_text())
+    details["assertions"] = [entry for entry in details["assertions"] if entry["index"] != 0]
+    details_path.write_text(json.dumps(details))
+
+    results = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+    )
+
+    assert "error" in results["hello-opencode-with-r1"]
+    assert "did not report" in results["hello-opencode-with-r1"]["error"]
+
+
+def test_deferred_results_keep_their_assertion_indices(tmp_path: Path):
+    trajectory = {
+        "schema_version": "ATIF-v1.7",
+        "steps": [
+            {
+                "step_id": 2,
+                "source": "agent",
+                "message": "running tests",
+                "tool_calls": [
+                    {
+                        "tool_call_id": "c1",
+                        "function_name": "shell",
+                        "arguments": {"command": "pytest -q"},
+                    }
+                ],
+            }
+        ],
+    }
+    job_dir = _write_job(
+        tmp_path,
+        assertions=["The summary is friendly", {"type": "command_ran", "command": "pytest"}],
+        deferred=[0, 1],
+        trajectory=trajectory,
+    )
+    results = import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+    )
+
+    assertions = results["hello-opencode-with-r1"]["grading"]["assertion_results"]
+    assert assertions[0]["text"] == "The summary is friendly"
+    assert assertions[0]["skipped"] is True
+    assert assertions[1]["passed"] is True
+    assert "pytest" in assertions[1]["text"]
+
+
+def test_import_records_run_id_and_workspace_path(tmp_path: Path):
+    job_dir = _write_job(tmp_path)
+    import_job(
+        job_dir,
+        manifest=_manifest(tmp_path),
+        iteration_dir=tmp_path / "iteration",
+        iteration=1,
+        runs=1,
+        run_id="abc123",
+    )
+
+    config_dir = tmp_path / "iteration" / "eval-hello" / "opencode" / "with_skill"
+    meta = json.loads((config_dir / "run_meta.json").read_text())
+    assert meta["run_id"] == "abc123"
+    assert meta["workspace_path"].endswith("artifacts/app")
+    assert (config_dir / "outputs" / "output.txt").is_file()
+
+
 def test_import_grades_command_ran_from_atif(tmp_path: Path):
     trajectory = {
         "schema_version": "ATIF-v1.7",

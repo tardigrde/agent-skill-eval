@@ -1667,7 +1667,7 @@ def grade(
 
     updated = 0
     for eval_dir in sorted(workspace.glob("eval-*")):
-        eval_id = eval_dir.name[len("eval-") :]
+        eval_id = _eval_id_for_dir(eval_dir)
         eval_case = eval_lookup.get(eval_id)
         if not eval_case:
             console.print(f"  [yellow]No metadata for {eval_dir.name}, skipping[/yellow]")
@@ -1684,6 +1684,17 @@ def grade(
                 if not output_path.exists():
                     continue
 
+                workspace_path = None
+                meta_path = config_dir / "run_meta.json"
+                if meta_path.exists():
+                    try:
+                        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                        candidate = meta.get("workspace_path")
+                        if candidate and Path(candidate).is_dir():
+                            workspace_path = Path(candidate)
+                    except (OSError, json.JSONDecodeError):
+                        workspace_path = None
+
                 agent_output = output_path.read_text()
                 grading = grade_assertions(
                     assertions,
@@ -1691,6 +1702,7 @@ def grade(
                     config_dir / "outputs",
                     eval_case.get("expected_output", ""),
                     llm_grader,
+                    workspace=workspace_path,
                     pre_state=None,
                     post_state=None,
                     should_trigger=should_trigger,
@@ -1724,6 +1736,18 @@ def grade(
     console.print(f"[green]Re-grading complete! Updated {updated} grading file(s).[/green]")
 
 
+def _eval_id_for_dir(eval_dir: Path) -> str:
+    """Recover the original eval id, which may differ from the sanitized dir."""
+    for meta_path in sorted(eval_dir.rglob("run_meta.json")):
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if data.get("eval_id") is not None:
+            return str(data["eval_id"])
+    return eval_dir.name[len("eval-") :]
+
+
 def _collect_results(workspace: Path) -> dict[str, dict]:
     """Reconstruct per-run results for benchmark recompute.
 
@@ -1751,7 +1775,7 @@ def _collect_results(workspace: Path) -> dict[str, dict]:
                 meta_path = config_dir / "run_meta.json"
                 agent = "unknown"
                 with_skill = "with_skill" in config_dir.parts
-                eval_id = eval_dir.name[len("eval-") :]
+                eval_id = _eval_id_for_dir(eval_dir)
                 if meta_path.exists():
                     try:
                         meta = json.loads(meta_path.read_text())

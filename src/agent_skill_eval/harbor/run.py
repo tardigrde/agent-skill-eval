@@ -22,6 +22,7 @@ from agent_skill_eval.models import AgentType
 from agent_skill_eval.runner import compute_benchmark
 from agent_skill_eval.skills import SkillInstaller
 from agent_skill_eval.summary import build_run_summary, write_run_summary
+from agent_skill_eval.validation import load_and_validate_suite
 
 HARBOR_AGENTS = {
     AgentType.OPENCODE: "opencode-v2",
@@ -78,11 +79,22 @@ def _agent_name(agent: AgentType) -> str:
         raise ValueError(f"Agent '{agent.value}' has no Harbor adapter. Use opencode, claude-code, or codex.") from exc
 
 
+def _arm_task_names(manifest: HarborExportManifest, with_skill: bool) -> list[str]:
+    """Exact task names for one arm.
+
+    Do not use suffix globs: a case id can itself end in ``__with`` or
+    ``__without``, and a glob would silently drop it from one arm.
+    """
+    want = "with" if with_skill else "without"
+    return sorted(task for task, arm in manifest.task_arms.items() if arm == "both" or arm == want)
+
+
 def _job_config(
     *,
     job_name: str,
     jobs_dir: Path,
     tasks_dir: Path,
+    task_names: list[str],
     agent: AgentType,
     model: Optional[str],
     with_skill: bool,
@@ -116,7 +128,7 @@ def _job_config(
         "datasets": [
             {
                 "path": str(tasks_dir),
-                "exclude_task_names": ["*__without"] if with_skill else ["*__with"],
+                "task_names": task_names,
             }
         ],
         "agents": [agent_entry],
@@ -168,6 +180,27 @@ def run_harbor(options: HarborRunOptions) -> Path:
     configs_dir = harbor_dir / "configs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
+    suite, _report = load_and_validate_suite(
+        options.evals_path,
+        options.eval_ids,
+        options.side_effect_levels,
+    )
+    evals_meta = {
+        "skill_name": skill_name,
+        "skill_hash": skill_hash,
+        "skill_size": skill_size,
+        "evals": [case.model_dump() for case in suite.evals],
+        "source_repo": None,
+        "selected_eval_ids": options.eval_ids,
+        "selected_side_effect_levels": options.side_effect_levels,
+        "grader": {
+            "model": options.grader_model,
+            "base_url": options.grader_base_url,
+            "allowed_models": list(options.grader_allowed_models) if options.grader_allowed_models else None,
+        },
+    }
+    (iteration_dir / "evals_meta.json").write_text(json.dumps(evals_meta, indent=2), encoding="utf-8")
+
     started = time.time()
     job_dirs: list[Path] = []
 
@@ -175,12 +208,16 @@ def run_harbor(options: HarborRunOptions) -> Path:
         model = options.agent_models.get(agent)
         arms = [True, False] if options.with_baseline else [True]
         for with_skill in arms:
+            task_names = _arm_task_names(manifest, with_skill)
+            if not task_names:
+                continue
             arm = "with_skill" if with_skill else "without_skill"
             job_name = _slug(f"{skill_name}__{agent.value}__{arm}")
             config = _job_config(
                 job_name=job_name,
                 jobs_dir=jobs_dir,
                 tasks_dir=tasks_dir,
+                task_names=task_names,
                 agent=agent,
                 model=model,
                 with_skill=with_skill,
@@ -211,6 +248,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 iteration=options.iteration,
                 runs=options.runs,
                 llm_grader=grader,
+                run_id=run_id,
             )
         )
 

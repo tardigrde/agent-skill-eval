@@ -469,6 +469,8 @@ agent-skill-eval grade --workspace <iteration-dir> [--recompute-benchmark]
 
 Re-grades existing outputs using saved `evals_meta.json` and state snapshots. Two caveats: LLM-graded assertions are re-evaluated from scratch and may flip verdicts, and because the original agent workspace is deleted after the run, the judge re-grades from the saved artifacts (agent output, logs) rather than the live workspace files.
 
+With the Harbor backend, the importer writes `evals_meta.json`, `outputs/output.txt`, and the artifact workspace path, so `grade` can re-judge without rerunning agents. It re-runs deterministic assertions too; compare the original `grading.json` if you only want judge changes.
+
 ### `cleanup`
 
 ```bash

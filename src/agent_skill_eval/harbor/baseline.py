@@ -150,6 +150,25 @@ def baseline_commit(workspace: Path) -> Optional[str]:
     return roots[-1] if roots else None
 
 
+def is_ancestor(workspace: Path, ancestor: str, descendant: str = "HEAD") -> bool:
+    """True when ``ancestor`` is in ``descendant``'s history.
+
+    Do not use the 50-entry ``commit_shas`` snapshot for this: a long agent
+    run can push the baseline out of that window.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=workspace,
+            check=False,
+            capture_output=True,
+            env=safe_git_env(workspace),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def baseline_tree(workspace: Path, sha: str) -> Optional[str]:
     """Return the git tree hash of a commit, or None when it cannot be read."""
     try:

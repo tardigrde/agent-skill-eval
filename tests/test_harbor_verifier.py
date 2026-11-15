@@ -124,6 +124,20 @@ def test_negative_control_fails_when_a_commit_is_created(tmp_path: Path):
     assert "new commit" in results[0].evidence.lower()
 
 
+def test_side_effect_contract_catches_a_new_symlink(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    (workspace / "leak").symlink_to("/etc/hosts")
+    case = _case(workspace, [])
+    case["side_effect_contract"] = {"allow_worktree_changes": False}
+
+    results, _payload = grade(case, baseline)
+
+    contract = results[-1]
+    assert contract.method == "side-effect-contract"
+    assert contract.passed is False
+    assert "worktree changes" in contract.evidence
+
+
 def test_missing_git_history_fails_git_checks(tmp_path: Path):
     workspace, baseline = _make_workspace(tmp_path)
     shutil.rmtree(workspace / ".git")

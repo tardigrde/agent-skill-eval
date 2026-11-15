@@ -178,6 +178,9 @@ class RunMeta(BaseModel):
     skill_invoked: Optional[bool] = None
     skill_invocation_evidence: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
+    # Harbor runs keep the artifact workdir in the job directory. Recording
+    # it lets `grade` re-run assertions without a second agent run.
+    workspace_path: Optional[str] = None
 
 
 class CleanupManifest(BaseModel):

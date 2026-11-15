@@ -659,6 +659,7 @@ class EvalRunner:
                 "skill_invoked": skill_invoked,
                 "skill_invocation_evidence": skill_invocation_evidence,
                 "should_trigger": eval_case.should_trigger,
+                "force_skill_invocation": eval_case.force_skill_invocation,
                 "tags": list(eval_case.tags),
             },
             "cleanup_entry": cleanup_entry,

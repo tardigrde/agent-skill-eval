@@ -116,19 +116,34 @@ def _deferred_results(
 ) -> dict[int, AssertionResult]:
     indices = [int(index) for index in case.get("deferred") or []]
     assertions = case.get("assertions") or []
-    selected = [assertions[index] for index in indices if 0 <= index < len(assertions)]
-    if not selected:
-        return {}
-    grading = grade_assertions(
-        selected,
-        agent_output,
-        output_dir,
-        str(case.get("expected_output") or ""),
-        llm_grader,
-        workspace=workspace,
-        should_trigger=bool(case.get("should_trigger", True)),
-    )
-    return {index: result for index, result in zip(indices, grading.assertion_results)}
+    results: dict[int, AssertionResult] = {}
+    for index in indices:
+        if not 0 <= index < len(assertions):
+            continue
+        # Grade one assertion per call. grade_assertions reorders its output
+        # (deterministic, then LLM, then skipped), so zipping it with the
+        # input indices would attach the wrong evidence to the wrong check.
+        grading = grade_assertions(
+            [assertions[index]],
+            agent_output,
+            output_dir,
+            str(case.get("expected_output") or ""),
+            llm_grader,
+            workspace=workspace,
+            should_trigger=bool(case.get("should_trigger", True)),
+        )
+        results[index] = (
+            grading.assertion_results[0]
+            if grading.assertion_results
+            else AssertionResult(
+                text=str(assertions[index]),
+                passed=False,
+                evidence="Deferred assertion was not graded",
+                method="deferred",
+                skipped=True,
+            )
+        )
+    return results
 
 
 def _skill_names(manifest: HarborExportManifest, case: dict[str, Any]) -> list[str]:
@@ -149,6 +164,7 @@ def import_job(
     iteration: int,
     runs: int,
     llm_grader: Any = None,
+    run_id: Optional[str] = None,
 ) -> dict[str, dict[str, Any]]:
     """Import one Harbor job and write the native per-run artifacts."""
     results: dict[str, dict[str, Any]] = {}
@@ -187,12 +203,18 @@ def import_job(
             continue
 
         details = _json(trial_dir / "verifier" / "reward-details.json")
+        if not details:
+            results[run_key] = {"error": "Verifier result is missing (reward-details.json)"}
+            continue
         case = details.get("case") or {}
         if not case:
             fallback = Path(manifest.out_dir) / "tasks" / task_dir_name / "tests" / "case.json"
             case = _json(fallback)
         if not case:
             results[run_key] = {"error": "Verifier did not record the case definition"}
+            continue
+        if details.get("case_id") and str(details["case_id"]) != str(case.get("case_id")):
+            results[run_key] = {"error": "Verifier case_id does not match the exported case"}
             continue
         workdir = str(case.get("workdir") or manifest.workdir)
         workspace = _artifact_workspace(trial_dir, workdir)
@@ -204,6 +226,12 @@ def import_job(
             config_dir = config_dir / f"run-{run_index}"
         output_dir = config_dir / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Write timing before grading: tests_pass reads timing.json for the
+        # exit code. Also save the transcript so `grade` can re-judge without
+        # rerunning the agent.
+        with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
+            json.dump(timing.model_dump(), handle, indent=2)
+        (output_dir / "output.txt").write_text(agent_output, encoding="utf-8")
         with open(output_dir / "stdout.log", "w", encoding="utf-8") as handle:
             for command in executed_commands(trajectory):
                 handle.write(json.dumps({"type": "command_execution", "command": command}) + "\n")
@@ -232,6 +260,11 @@ def import_job(
                 llm_grader=llm_grader,
             )
         )
+
+        missing = sorted(set(range(len(case.get("assertions") or []))) - set(by_index))
+        if missing:
+            results[run_key] = {"error": f"Verifier did not report assertion(s): {missing}"}
+            continue
 
         ordered = [by_index[index] for index in sorted(by_index)]
         grading = GradingResult(
@@ -262,8 +295,9 @@ def import_job(
             skill_hash=manifest.skill_hash,
             side_effect_level=str(case.get("side_effect_level") or "local-only"),
             source_repo=None,
-            run_id=job_dir.name,
+            run_id=run_id or job_dir.name,
             run_index=run_index,
+            workspace_path=str(workspace) if workspace.exists() else None,
             model=model or None,
             reasoning_effort=(agent_config.get("kwargs") or {}).get("reasoning_effort"),
             base_url=agent_config.get("base_url"),
@@ -276,8 +310,6 @@ def import_job(
 
         with open(config_dir / "grading.json", "w", encoding="utf-8") as handle:
             json.dump(grading.model_dump(), handle, indent=2)
-        with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
-            json.dump(timing.model_dump(), handle, indent=2)
         with open(config_dir / "run_meta.json", "w", encoding="utf-8") as handle:
             json.dump(meta.model_dump(), handle, indent=2)
         with open(output_dir / "harbor_trial.json", "w", encoding="utf-8") as handle:
@@ -304,6 +336,7 @@ def import_job(
             "skill_invoked": triggered,
             "skill_invocation_evidence": trigger_evidence,
             "should_trigger": bool(case.get("should_trigger", True)),
+            "force_skill_invocation": bool(case.get("force_skill_invocation")),
             "tags": tags,
             "out_of_workspace": out_of_workspace,
         }
