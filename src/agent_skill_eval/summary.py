@@ -160,6 +160,10 @@ def _trigger_rates(completed: list[dict]) -> dict:
     """
     groups: dict[str, dict] = {}
     for run in completed:
+        if run.get("force_skill_invocation"):
+            # Forced cases test execution, not discovery. Counting them would
+            # inflate the trigger rate by construction.
+            continue
         config = f"{run.get('agent')}_{'with_skill' if run.get('with_skill') else 'without_skill'}"
         entry = groups.setdefault(
             config,

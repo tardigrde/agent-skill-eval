@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 import shutil
 from pathlib import Path
 
@@ -29,6 +31,8 @@ from agent_skill_eval.validation import load_and_validate_suite
 DEFAULT_BASE_IMAGE = "python:3.12-slim"
 DEFAULT_WORKDIR = "/app"
 DEFAULT_TASK_VERSION = "1.0"
+_WORKDIR_RE = re.compile(r"/[A-Za-z0-9._/-]*")
+_IMAGE_RE = re.compile(r"[A-Za-z0-9._:/@+-]+")
 _DEFERRED_STRUCTURED = {"command_ran", "command_not_ran", "tests_pass"}
 _DEFERRED_PROSE = {"pushed", "pr-created", "command-ran", "content-contains", "valid-json", "llm"}
 
@@ -122,6 +126,11 @@ def export_suite(
     skill_path = skill_path.resolve()
     out_dir = out_dir.resolve()
 
+    if workdir == "/" or not _WORKDIR_RE.fullmatch(workdir) or ".." in Path(workdir).parts:
+        raise ValueError("--workdir must be an absolute POSIX path inside the container")
+    if not _IMAGE_RE.fullmatch(base_image):
+        raise ValueError("--base-image contains unsupported characters")
+
     installer = SkillInstaller(skill_path)
     problems = installer.frontmatter_problems()
     if problems:
@@ -152,15 +161,21 @@ def export_suite(
         harbor_version=harbor_version(),
     )
 
-    prefix_text = f"Use the ${skill_name} skill."
+    prefix_text = f"Use the ${frontmatter_name or skill_name} skill."
+    used_task_names: set[str] = set()
 
     for case in suite.evals:
         fixture_map = build_fixture_file_map(evals_path.parent, case.files)
         task_base = safe_task_name(str(case.id))
+        variants = _task_variants(case, task_base)
+        if any(name in used_task_names for name, _arm, _prefix in variants):
+            digest = hashlib.sha1(str(case.id).encode("utf-8")).hexdigest()[:6]
+            variants = _task_variants(case, f"{task_base}-{digest}")
+        used_task_names.update(name for name, _arm, _prefix in variants)
         task_names: list[str] = []
         tags = list(case.tags)
 
-        for task_name, arm, needs_prefix in _task_variants(case, task_base):
+        for task_name, arm, needs_prefix in variants:
             prefix = prefix_text if needs_prefix else None
             task_dir = tasks_root / task_name
             has_fixtures = _copy_fixtures(task_dir, fixture_map)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -9,8 +10,49 @@ from urllib.parse import urlparse
 from agent_skill_eval.models import GitStateSnapshot
 
 
+def safe_git_env(workspace: Path | None = None) -> dict[str, str]:
+    """Environment for running git on untrusted repositories.
+
+    A repository's own config is executable data: ``core.fsmonitor``,
+    ``core.hooksPath``, ``diff.external`` and ``core.sshCommand`` can run
+    programs. Disable them, ignore system/global config, and trust only the
+    workspace path passed in (for git's ownership check).
+    """
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+    overrides = {
+        "core.fsmonitor": "",
+        "core.hooksPath": os.devnull,
+        "core.pager": "cat",
+        "diff.external": "",
+        "core.sshCommand": "false",
+        "protocol.ext.allow": "never",
+    }
+    if workspace is not None:
+        overrides["safe.directory"] = str(workspace)
+    env["GIT_CONFIG_COUNT"] = str(len(overrides))
+    for index, (key, value) in enumerate(overrides.items()):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
 def _run(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=safe_git_env(cwd),
+    )
     return result.stdout or ""
 
 

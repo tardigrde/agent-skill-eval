@@ -16,7 +16,7 @@ from rich.markup import escape
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from agent_skill_eval import __version__
-from agent_skill_eval.analysis import percentile, wilson_interval
+from agent_skill_eval.analysis import percentile, safe_eval_dir, wilson_interval
 from agent_skill_eval.fixtures import build_fixture_file_map
 from agent_skill_eval.git_state import capture_git_state, github_repo_slug, repo_project_path, repo_provider
 from agent_skill_eval.graders import DEFAULT_GRADER_MODEL, LLMGrader, grade_assertions, summarize_assertion_results
@@ -403,7 +403,7 @@ class EvalRunner:
         self._emit("run_started", **identity)
         record("run_started", **identity, side_effect_level=eval_case.side_effect_level)
 
-        eval_slug = f"eval-{eval_case.id}"
+        eval_slug = safe_eval_dir(eval_case.id)
         config_slug = "with_skill" if with_skill else "without_skill"
         agent_slug = agent_type.value
         config_dir = iteration_dir / eval_slug / agent_slug / config_slug
@@ -659,6 +659,7 @@ class EvalRunner:
                 "skill_invoked": skill_invoked,
                 "skill_invocation_evidence": skill_invocation_evidence,
                 "should_trigger": eval_case.should_trigger,
+                "force_skill_invocation": eval_case.force_skill_invocation,
                 "tags": list(eval_case.tags),
             },
             "cleanup_entry": cleanup_entry,
@@ -850,10 +851,12 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
     k = max(len(v) for v in by_eval.values())
     pass_at_k = sum(1 for v in by_eval.values() if any(v)) / len(by_eval)
     # pass^k: all attempts for one case must pass. Cases with fewer than k
-    # observed runs (errors were excluded upstream) count as incomplete and
-    # are reported through the run count, not silently promoted.
-    pass_hat = [all(v) and len(v) == k for v in by_eval.values()]
-    pass_hat_k = sum(pass_hat) / len(pass_hat)
+    # observed runs (errors were excluded upstream) are incomplete: they are
+    # left out of the denominator instead of counting as failures.
+    complete = [v for v in by_eval.values() if len(v) == k]
+    incomplete = len(by_eval) - len(complete)
+    pass_hat = [all(v) for v in complete]
+    pass_hat_k = sum(pass_hat) / len(pass_hat) if pass_hat else 0.0
     wilson_low, wilson_high = wilson_interval(sum(pass_hat), len(pass_hat))
 
     return BenchmarkStats(
@@ -868,6 +871,7 @@ def compute_stats(results: list[dict]) -> BenchmarkStats:
         pass_hat_k_wilson_low=round(wilson_low, 4),
         pass_hat_k_wilson_high=round(wilson_high, 4),
         cases=len(by_eval),
+        incomplete_cases=incomplete,
         skipped_assertions=skipped,
         k=k,
     )

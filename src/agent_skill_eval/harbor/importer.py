@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from agent_skill_eval.git_state import capture_git_state, state_diff
+from agent_skill_eval.analysis import safe_eval_dir
 from agent_skill_eval.graders import grade_assertions, summarize_assertion_results
 from agent_skill_eval.harbor import harbor_version
 from agent_skill_eval.harbor.atif import (
@@ -18,33 +18,14 @@ from agent_skill_eval.harbor.atif import (
     raw_agent_text,
     reasoning_tokens,
 )
-from agent_skill_eval.harbor.baseline import (
-    baseline_commit,
-    baseline_violations,
-    is_git_repo,
-)
-from agent_skill_eval.harbor.models import HarborBaseline, HarborExportManifest
-from agent_skill_eval.models import (
-    AssertionResult,
-    GitStateSnapshot,
-    GradingResult,
-    RunMeta,
-    TimingData,
-)
+from agent_skill_eval.harbor.models import HarborExportManifest
+from agent_skill_eval.models import AssertionResult, GradingResult, RunMeta, TimingData
 
 HARBOR_AGENT_MAP = {
     "opencode-v2": "opencode",
     "opencode": "opencode",
     "claude-code": "claude-code",
     "codex": "codex",
-}
-_AGENT_ERRORS = {
-    "NonZeroAgentExitCodeError",
-    "AgentTimeoutError",
-    "ContextWindowExceededError",
-    "OutputTokenExceededError",
-    "ContextLengthExceededError",
-    "OutputLengthExceededError",
 }
 
 
@@ -81,29 +62,21 @@ def _artifact_workspace(trial_dir: Path, workdir: str) -> Path:
     return trial_dir / "artifacts"
 
 
-def _workspace_baseline(task_dir: Optional[Path]) -> Optional[HarborBaseline]:
-    if task_dir is None:
-        return None
-    path = task_dir / "tests" / "baseline.json"
-    if not path.is_file():
-        return None
-    try:
-        return HarborBaseline.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-
-
-def _sanity_error(result: dict[str, Any], timing: TimingData) -> Optional[str]:
-    if not result.get("reward_valid", False):
-        return "Harbor marked the reward invalid"
-    if result.get("verifier_result") is None:
-        return "Harbor did not produce a verifier reward"
+def _sanity_error(result: dict[str, Any]) -> Optional[str]:
     exception = result.get("exception_info") or {}
     if exception:
         name = str(exception.get("exception_type") or "Exception")
         return f"{name}: {exception.get('exception_message', '')}".strip()
-    if timing.output_tokens == 0:
+    if not result.get("reward_valid", False):
+        return "Harbor marked the reward invalid"
+    if result.get("verifier_result") is None:
+        return "Harbor did not produce a verifier reward"
+    agent_result = result.get("agent_result") or {}
+    reported_output = agent_result.get("n_output_tokens")
+    if reported_output is not None and int(reported_output) == 0:
         return "Agent produced 0 output tokens"
+    if all(agent_result.get(key) is None for key in ("n_input_tokens", "n_cache_tokens", "n_output_tokens")):
+        return "Harbor reported no token telemetry"
     return None
 
 
@@ -143,66 +116,34 @@ def _deferred_results(
 ) -> dict[int, AssertionResult]:
     indices = [int(index) for index in case.get("deferred") or []]
     assertions = case.get("assertions") or []
-    selected = [assertions[index] for index in indices if 0 <= index < len(assertions)]
-    if not selected:
-        return {}
-    grading = grade_assertions(
-        selected,
-        agent_output,
-        output_dir,
-        str(case.get("expected_output") or ""),
-        llm_grader,
-        workspace=workspace,
-        should_trigger=bool(case.get("should_trigger", True)),
-    )
-    return {index: result for index, result in zip(indices, grading.assertion_results)}
-
-
-def _side_effect_result(
-    case: dict[str, Any],
-    *,
-    workspace: Path,
-    baseline: Optional[HarborBaseline],
-) -> Optional[AssertionResult]:
-    contract = case.get("side_effect_contract")
-    if not contract or baseline is None:
-        return None
-
-    violations = baseline_violations(workspace, baseline)
-    problems: list[str] = []
-    evidence: list[str] = []
-    if violations and not contract.get("allow_worktree_changes", True):
-        problems.append("worktree changes are not allowed")
-        evidence.extend(violations)
-
-    if is_git_repo(workspace):
-        sha = baseline_commit(workspace)
-        if sha:
-            pre = GitStateSnapshot(
-                local_branches=["main"],
-                current_branch="main",
-                head_sha=sha,
-                commit_count=1,
-                commit_shas=[sha],
-                branch_heads={"main": sha},
+    results: dict[int, AssertionResult] = {}
+    for index in indices:
+        if not 0 <= index < len(assertions):
+            continue
+        # Grade one assertion per call. grade_assertions reorders its output
+        # (deterministic, then LLM, then skipped), so zipping it with the
+        # input indices would attach the wrong evidence to the wrong check.
+        grading = grade_assertions(
+            [assertions[index]],
+            agent_output,
+            output_dir,
+            str(case.get("expected_output") or ""),
+            llm_grader,
+            workspace=workspace,
+            should_trigger=bool(case.get("should_trigger", True)),
+        )
+        results[index] = (
+            grading.assertion_results[0]
+            if grading.assertion_results
+            else AssertionResult(
+                text=str(assertions[index]),
+                passed=False,
+                evidence="Deferred assertion was not graded",
+                method="deferred",
+                skipped=True,
             )
-            post = capture_git_state(workspace)
-            diff = state_diff(pre, post)
-            if diff.get("new_branches") and not contract.get("allow_new_local_branches", True):
-                problems.append("new local branches are not allowed")
-                evidence.append(f"new branches: {diff['new_branches']}")
-            if diff.get("new_commit_shas") and not contract.get("allow_new_commits", True):
-                problems.append("new commits are not allowed")
-                evidence.append(f"new commits: {diff['new_commit_shas']}")
-    else:
-        evidence.append("git history unavailable; remote side-effect checks not evaluated")
-
-    return AssertionResult(
-        text="The run stayed inside its side-effect contract",
-        passed=not problems,
-        evidence="; ".join(problems + evidence) or "No side-effect violations",
-        method="side-effect-contract",
-    )
+        )
+    return results
 
 
 def _skill_names(manifest: HarborExportManifest, case: dict[str, Any]) -> list[str]:
@@ -223,6 +164,7 @@ def import_job(
     iteration: int,
     runs: int,
     llm_grader: Any = None,
+    run_id: Optional[str] = None,
 ) -> dict[str, dict[str, Any]]:
     """Import one Harbor job and write the native per-run artifacts."""
     results: dict[str, dict[str, Any]] = {}
@@ -249,14 +191,21 @@ def import_job(
         run_index = counters[key]
 
         trajectory = load_trajectory(trial_dir)
+        if trajectory:
+            traj_agent = str((trajectory.get("agent") or {}).get("name") or "")
+            if traj_agent and agent_info.get("name") and traj_agent != str(agent_info.get("name")):
+                trajectory = None
         timing = _timing(result, trajectory)
-        error = _sanity_error(result, timing)
+        error = _sanity_error(result)
         run_key = f"{case_id}-{agent}-{'with' if with_skill else 'without'}-r{run_index}"
         if error:
             results[run_key] = {"error": error}
             continue
 
         details = _json(trial_dir / "verifier" / "reward-details.json")
+        if not details:
+            results[run_key] = {"error": "Verifier result is missing (reward-details.json)"}
+            continue
         case = details.get("case") or {}
         if not case:
             fallback = Path(manifest.out_dir) / "tasks" / task_dir_name / "tests" / "case.json"
@@ -264,16 +213,25 @@ def import_job(
         if not case:
             results[run_key] = {"error": "Verifier did not record the case definition"}
             continue
+        if details.get("case_id") and str(details["case_id"]) != str(case.get("case_id")):
+            results[run_key] = {"error": "Verifier case_id does not match the exported case"}
+            continue
         workdir = str(case.get("workdir") or manifest.workdir)
         workspace = _artifact_workspace(trial_dir, workdir)
         agent_output = raw_agent_text(trial_dir)
 
-        config_name = f"eval-{case_id}"
+        config_name = safe_eval_dir(case_id)
         config_dir = iteration_dir / config_name / agent / ("with_skill" if with_skill else "without_skill")
         if runs > 1:
             config_dir = config_dir / f"run-{run_index}"
         output_dir = config_dir / "outputs"
         output_dir.mkdir(parents=True, exist_ok=True)
+        # Write timing before grading: tests_pass reads timing.json for the
+        # exit code. Also save the transcript so `grade` can re-judge without
+        # rerunning the agent.
+        with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
+            json.dump(timing.model_dump(), handle, indent=2)
+        (output_dir / "output.txt").write_text(agent_output, encoding="utf-8")
         with open(output_dir / "stdout.log", "w", encoding="utf-8") as handle:
             for command in executed_commands(trajectory):
                 handle.write(json.dumps({"type": "command_execution", "command": command}) + "\n")
@@ -303,12 +261,12 @@ def import_job(
             )
         )
 
-        baseline = _workspace_baseline(Path(str((config.get("task") or {}).get("path") or "")))
-        side_effect = _side_effect_result(case, workspace=workspace, baseline=baseline)
+        missing = sorted(set(range(len(case.get("assertions") or []))) - set(by_index))
+        if missing:
+            results[run_key] = {"error": f"Verifier did not report assertion(s): {missing}"}
+            continue
 
         ordered = [by_index[index] for index in sorted(by_index)]
-        if side_effect is not None:
-            ordered.append(side_effect)
         grading = GradingResult(
             assertion_results=ordered,
             summary=summarize_assertion_results(ordered),
@@ -337,8 +295,9 @@ def import_job(
             skill_hash=manifest.skill_hash,
             side_effect_level=str(case.get("side_effect_level") or "local-only"),
             source_repo=None,
-            run_id=job_dir.name,
+            run_id=run_id or job_dir.name,
             run_index=run_index,
+            workspace_path=str(workspace) if workspace.exists() else None,
             model=model or None,
             reasoning_effort=(agent_config.get("kwargs") or {}).get("reasoning_effort"),
             base_url=agent_config.get("base_url"),
@@ -349,20 +308,8 @@ def import_job(
             tags=tags,
         )
 
-        pre_state = None
-        post_state = None
-        if is_git_repo(workspace):
-            pre_state = GitStateSnapshot()
-            sha = baseline_commit(workspace)
-            if sha:
-                pre_state.head_sha = sha
-                pre_state.commit_shas = [sha]
-            post_state = capture_git_state(workspace)
-
         with open(config_dir / "grading.json", "w", encoding="utf-8") as handle:
             json.dump(grading.model_dump(), handle, indent=2)
-        with open(config_dir / "timing.json", "w", encoding="utf-8") as handle:
-            json.dump(timing.model_dump(), handle, indent=2)
         with open(config_dir / "run_meta.json", "w", encoding="utf-8") as handle:
             json.dump(meta.model_dump(), handle, indent=2)
         with open(output_dir / "harbor_trial.json", "w", encoding="utf-8") as handle:
@@ -376,11 +323,6 @@ def import_job(
                 handle,
                 indent=2,
             )
-        if pre_state is not None and post_state is not None:
-            with open(output_dir / "pre_state.json", "w", encoding="utf-8") as handle:
-                json.dump(pre_state.model_dump(), handle, indent=2)
-            with open(output_dir / "post_state.json", "w", encoding="utf-8") as handle:
-                json.dump(post_state.model_dump(), handle, indent=2)
 
         results[run_key] = {
             "eval_id": case.get("case_id", case_id),
@@ -394,6 +336,7 @@ def import_job(
             "skill_invoked": triggered,
             "skill_invocation_evidence": trigger_evidence,
             "should_trigger": bool(case.get("should_trigger", True)),
+            "force_skill_invocation": bool(case.get("force_skill_invocation")),
             "tags": tags,
             "out_of_workspace": out_of_workspace,
         }

@@ -162,7 +162,7 @@ class TestLLMGraderGrade:
             expected_output="expected world",
         )
 
-        prompt = captured_messages[0][0]["content"]
+        prompt = captured_messages[0][-1]["content"]
         assert "expected world" in prompt
         assert "agent said hello" in prompt
         assert "1. assertion 1" in prompt
@@ -282,7 +282,7 @@ class TestLLMGraderGrade:
 
         assert mock_client.chat.completions.create.call_count == 2
         # The retry prompt only contains the dropped assertion.
-        retry_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs["messages"][0]["content"]
+        retry_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs["messages"][-1]["content"]
         assert "Assert 2" in retry_prompt
         assert "1. Assert 1" not in retry_prompt
         assert len(results) == 2

@@ -10,10 +10,18 @@ from agent_skill_eval.analysis import (
     compare_to_baseline,
     percentile,
     render_comparison_markdown,
+    safe_eval_dir,
     wilson_interval,
 )
 from agent_skill_eval.cli import app
 from agent_skill_eval.summary import _out_of_workspace, _tag_pass_rates, _trigger_rates
+
+
+def test_safe_eval_dir_rejects_path_traversal_and_collisions():
+    assert safe_eval_dir("1") == "eval-1"
+    assert safe_eval_dir("../../etc/passwd").startswith("eval-etc-passwd-")
+    assert safe_eval_dir("a b").startswith("eval-a-b-")
+    assert safe_eval_dir("a/b") != safe_eval_dir("a?b")
 
 
 def test_percentile_interpolates():
@@ -96,6 +104,19 @@ def test_trigger_rates_split_positive_and_negative_controls():
     assert rates["positive"]["unknown"] == 1
     assert rates["negative"]["rate"] == 0.0
     assert rates["unknown"] == 1
+
+
+def test_forced_cases_are_excluded_from_trigger_rates():
+    runs = [
+        {
+            "agent": "opencode",
+            "with_skill": True,
+            "should_trigger": True,
+            "force_skill_invocation": True,
+            "skill_invoked": True,
+        }
+    ]
+    assert _trigger_rates(runs) == {}
 
 
 def test_tag_pass_rates():

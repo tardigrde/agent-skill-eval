@@ -186,7 +186,10 @@ Reasons for the host-side judge:
 - our report already owns scoring.
 
 Consequence: Harbor's `reward.json` holds deterministic results only. The
-`agent-skill-eval` report is the product.
+`agent-skill-eval` report is the product. The importer writes `evals_meta.json`,
+`outputs/output.txt`, and the artifact workspace path, so `grade` can change the
+judge without rerunning agents. It re-runs deterministic assertions as well;
+use the saved `grading.json` when only the judge changed.
 
 The judge model is a per-suite field. Warn when the judge and the agent share a
 provider or family. The current default judge and the proof-run agent are both
@@ -237,6 +240,18 @@ Limitations of the spike:
   (`spike-hello`). Trigger detection must use the observation name.
 - The task used a local Dockerfile and a separate verifier that reuses the agent
   environment. It did not use a dedicated verifier image.
+
+## Limits
+
+- ATIF is written into the agent's log directory. A hostile agent can write
+  there. Trigger state and out-of-workspace access are signals, not scores.
+  The importer checks the trajectory's agent name, but it cannot prove the file
+  is untampered. Do not use these numbers as a pass/fail gate.
+- Remote side-effect checks (`pushed`, `pr_created`) are not implemented in the
+  verifier. A case whose side-effect contract forbids remote branches or review
+  requests fails closed in Harbor mode.
+- A dedicated verifier image must contain the grader package. The exporter
+  writes `tests/Dockerfile` with the package copied into `/tests`.
 
 ## Findings for upstream
 

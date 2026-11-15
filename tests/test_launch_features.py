@@ -106,6 +106,19 @@ class TestPassAtK:
         assert stats.pass_hat_k_wilson_low < 0.5 < stats.pass_hat_k_wilson_high
         assert stats.cases == 2
 
+    def test_pass_hat_k_skips_incomplete_cases(self):
+        results = [
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 1.0, eval_id="e1"),
+            _result("opencode", True, 0.0, eval_id="e2"),
+        ]
+        stats = compute_stats(results)
+        assert stats.k == 3
+        assert stats.cases == 2
+        assert stats.incomplete_cases == 1
+        assert stats.pass_hat_k == pytest.approx(1.0)
+
     def test_percentiles_are_recorded(self):
         results = [
             _result("opencode", True, 1.0, eval_id="e1"),

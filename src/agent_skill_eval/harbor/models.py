@@ -20,6 +20,7 @@ class HarborBaseline(BaseModel):
     schema_version: int = 1
     workdir: str = "/app"
     tree_hash: Optional[str] = None
+    commit_sha: Optional[str] = None
     branch: str = "main"
     files: list[HarborBaselineFile] = Field(default_factory=list)
     dirs: list[str] = Field(default_factory=list)

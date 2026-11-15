@@ -4,7 +4,10 @@ import json
 import sys
 from pathlib import Path
 
-from agent_skill_eval.harbor.run import HarborRunOptions, run_harbor
+import pytest
+
+from agent_skill_eval.harbor.models import HarborCase, HarborExportManifest
+from agent_skill_eval.harbor.run import HarborRunOptions, _arm_task_names, run_harbor
 from agent_skill_eval.models import AgentType
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -162,6 +165,65 @@ def _write_template(tmp_path: Path) -> Path:
     return job_dir
 
 
+def test_arm_task_names_keep_natural_suffixes_in_both_arms():
+    manifest = HarborExportManifest(
+        suite="demo",
+        skill_name="demo",
+        skill_hash="abc",
+        evals_path="evals.json",
+        out_dir="out",
+        workdir="/app",
+        base_image="python:3.12-slim",
+        task_version="1.0",
+        cases=[
+            HarborCase(
+                case_id="foo__without",
+                task_names=["case-foo__without"],
+                arm="both",
+            )
+        ],
+        tasks={"case-foo__without": "foo__without"},
+        task_arms={"case-foo__without": "both"},
+    )
+
+    assert _arm_task_names(manifest, True) == ["case-foo__without"]
+    assert _arm_task_names(manifest, False) == ["case-foo__without"]
+
+
+def test_arm_task_names_select_forced_variants():
+    manifest = HarborExportManifest(
+        suite="demo",
+        skill_name="demo",
+        skill_hash="abc",
+        evals_path="evals.json",
+        out_dir="out",
+        workdir="/app",
+        base_image="python:3.12-slim",
+        task_version="1.0",
+        cases=[HarborCase(case_id="x", task_names=["case-x__with", "case-x__without"], arm="with")],
+        tasks={"case-x__with": "x", "case-x__without": "x"},
+        task_arms={"case-x__with": "with", "case-x__without": "without"},
+    )
+
+    assert _arm_task_names(manifest, True) == ["case-x__with"]
+    assert _arm_task_names(manifest, False) == ["case-x__without"]
+
+
+def test_run_harbor_requires_an_explicit_model(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agent_skill_eval.harbor.run.require_harbor", lambda: "0.26.0")
+
+    with pytest.raises(ValueError, match="explicit model"):
+        run_harbor(
+            HarborRunOptions(
+                evals_path=EVALS,
+                skill_path=SKILL,
+                workspace=tmp_path / "workspace",
+                agents=[AgentType.OPENCODE],
+                agent_models={},
+            )
+        )
+
+
 def test_run_harbor_exports_runs_and_imports(tmp_path: Path, monkeypatch):
     template = _write_template(tmp_path)
     monkeypatch.setenv("FAKE_JOB_TEMPLATE", str(template))
@@ -194,3 +256,21 @@ def test_run_harbor_exports_runs_and_imports(tmp_path: Path, monkeypatch):
 
     benchmark = json.loads((iteration_dir / "benchmark.json").read_text())
     assert benchmark["deltas"]["opencode"]["pass_rate"] == 0.0
+
+    run_harbor(
+        HarborRunOptions(
+            evals_path=EVALS,
+            skill_path=SKILL,
+            workspace=tmp_path / "workspace",
+            agents=[AgentType.OPENCODE],
+            agent_models={AgentType.OPENCODE: "openrouter/deepseek/deepseek-v4.1-flash"},
+            runs=1,
+            concurrency=1,
+            harbor_bin=str(fake),
+        )
+    )
+    second = json.loads((iteration_dir / "summary.json").read_text())
+    assert second["run_id"] != summary["run_id"]
+    jobs_root = iteration_dir / "harbor" / "jobs"
+    assert (jobs_root / summary["run_id"]).is_dir()
+    assert (jobs_root / second["run_id"]).is_dir()

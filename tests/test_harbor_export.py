@@ -93,6 +93,67 @@ def test_generated_files_match_golden(tmp_path: Path):
         assert (tasks / produced).read_text() == (GOLDEN / golden).read_text(), produced
 
 
+def test_colliding_case_slugs_keep_every_case(tmp_path: Path):
+    evals = tmp_path / "evals.json"
+    evals.write_text(
+        json.dumps(
+            {
+                "skill_name": "demo",
+                "evals": [
+                    {"id": "a b", "prompt": "one", "expected_output": "one"},
+                    {"id": "a-b", "prompt": "two", "expected_output": "two"},
+                ],
+            }
+        )
+    )
+
+    manifest = export_suite(evals_path=evals, skill_path=SKILL, out_dir=tmp_path / "out")
+
+    assert len(manifest.tasks) == 2
+    assert set(manifest.tasks.values()) == {"a b", "a-b"}
+    assert len({path.name for path in (tmp_path / "out" / "tasks").iterdir()}) == 2
+
+
+def test_forced_prefix_uses_the_frontmatter_name(tmp_path: Path):
+    skill = tmp_path / "dir-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text("---\nname: front-skill\ndescription: Demo.\n---\n\nUse the front name.\n")
+    evals = tmp_path / "evals.json"
+    evals.write_text(
+        json.dumps(
+            {
+                "skill_name": "dir-skill",
+                "evals": [
+                    {
+                        "id": "forced",
+                        "prompt": "Do the thing.",
+                        "expected_output": "Done.",
+                        "force_skill_invocation": True,
+                    }
+                ],
+            }
+        )
+    )
+
+    manifest = export_suite(evals_path=evals, skill_path=skill, out_dir=tmp_path / "out")
+
+    assert manifest.skill_name == "dir-skill"
+    assert manifest.skill_frontmatter_name == "front-skill"
+    instruction = (tmp_path / "out" / "tasks" / "case-forced__with" / "instruction.md").read_text()
+    assert "Use the $front-skill skill." in instruction
+    assert "$dir-skill" not in instruction
+
+
+def test_rejects_an_unsafe_workdir(tmp_path: Path):
+    with pytest.raises(ValueError, match="workdir"):
+        export_suite(
+            evals_path=EVALS,
+            skill_path=SKILL,
+            out_dir=tmp_path / "out",
+            workdir="/app; rm -rf /",
+        )
+
+
 def test_example_suite_exports_with_fixtures(tmp_path: Path):
     manifest = export_suite(
         evals_path=EXAMPLE_EVALS,

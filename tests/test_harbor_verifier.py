@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 from agent_skill_eval.harbor.baseline import build_baseline
-from agent_skill_eval.harbor.verifier import grade
+from agent_skill_eval.harbor.verifier import grade, reward_payload, write_rewards
+from agent_skill_eval.models import AssertionResult
 
 
 def _make_workspace(tmp_path: Path) -> tuple[Path, object]:
@@ -25,11 +28,15 @@ def _make_workspace(tmp_path: Path) -> tuple[Path, object]:
         (workspace / target).write_bytes(source.read_bytes())
 
     subprocess.run(["git", "init", "-q", "-b", "main", str(workspace)], check=True)
-    subprocess.run(["git", "-C", str(workspace), "config", "user.email", "test@example.com"], check=True)
-    subprocess.run(["git", "-C", str(workspace), "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.email", "eval@agent-skill-eval.local"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "config", "user.name", "agent-skill-eval"], check=True)
     subprocess.run(["git", "-C", str(workspace), "add", "-A"], check=True)
     env = {
         **os.environ,
+        "GIT_AUTHOR_NAME": "agent-skill-eval",
+        "GIT_AUTHOR_EMAIL": "eval@agent-skill-eval.local",
+        "GIT_COMMITTER_NAME": "agent-skill-eval",
+        "GIT_COMMITTER_EMAIL": "eval@agent-skill-eval.local",
         "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
         "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
     }
@@ -115,6 +122,75 @@ def test_negative_control_fails_when_a_commit_is_created(tmp_path: Path):
 
     assert results[0].passed is False
     assert "new commit" in results[0].evidence.lower()
+
+
+def test_side_effect_contract_catches_a_new_symlink(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    (workspace / "leak").symlink_to("/etc/hosts")
+    case = _case(workspace, [])
+    case["side_effect_contract"] = {"allow_worktree_changes": False}
+
+    results, _payload = grade(case, baseline)
+
+    contract = results[-1]
+    assert contract.method == "side-effect-contract"
+    assert contract.passed is False
+    assert "worktree changes" in contract.evidence
+
+
+def test_missing_git_history_fails_git_checks(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    shutil.rmtree(workspace / ".git")
+    case = _case(
+        workspace,
+        [{"type": "git_clean"}, "A git commit was created"],
+        should_trigger=False,
+    )
+
+    results, payload = grade(case, baseline)
+
+    assert [result.passed for result in results] == [False, False]
+    assert "missing" in results[0].evidence.lower()
+    assert payload["has_git"] is False
+
+
+def test_forged_baseline_marker_is_not_trusted(tmp_path: Path):
+    workspace, baseline = _make_workspace(tmp_path)
+    (workspace / "new.txt").write_text("new\n")
+    subprocess.run(["git", "-C", str(workspace), "add", "new.txt"], check=True)
+    subprocess.run(["git", "-C", str(workspace), "commit", "-qm", "agent commit"], check=True)
+    new_sha = subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True).strip()
+    (workspace / ".git" / "eval-baseline").write_text(new_sha + "\n")
+
+    case = _case(workspace, ["A git commit was created"], should_trigger=False)
+    results, payload = grade(case, baseline)
+
+    assert results[0].passed is False
+    assert "does not match" in results[0].evidence
+    assert payload["baseline_trusted"] is False
+
+
+def test_reward_payload_has_the_primary_reward_key():
+    results = [
+        AssertionResult(text="a", passed=True, evidence="", method="deterministic"),
+        AssertionResult(text="b", passed=False, evidence="", method="deterministic"),
+        AssertionResult(text="c", passed=False, evidence="", method="deferred", skipped=True),
+    ]
+
+    payload = reward_payload(results)
+
+    assert payload["reward"] == payload["correctness"] == 0.5
+    assert payload["a0"] == 1.0
+    assert payload["a1"] == 0.0
+    assert "a2" not in payload
+
+
+def test_write_rewards_never_passes_an_empty_verifier(tmp_path: Path):
+    write_rewards([], {}, target=tmp_path)
+    payload = json.loads((tmp_path / "reward.json").read_text())
+
+    assert payload["reward"] == 0.0
+    assert payload["correctness"] == 0.0
 
 
 def test_deferred_assertions_are_skipped_in_the_verifier(tmp_path: Path):
