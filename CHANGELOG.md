@@ -6,6 +6,20 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.12.0 (2026-11-15)
+
+### Features
+
+- **harbor**: Support hooks, budgets and pricing, add verifier parity test
+  ([`b6036e2`](https://github.com/tardigrde/agent-skill-eval/commit/b6036e21c79eb6c836600fca9b2c3337fa8e40dd))
+
+- pre-run, post-grade and post-run hooks run on the host around the Harbor jobs - per-case budgets
+  and --pricing-config apply after import - a test shows the Harbor verifier and the native grader
+  agree on workspace assertions
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.11.2 (2026-11-15)
 
 ### Bug Fixes
