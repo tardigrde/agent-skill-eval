@@ -247,9 +247,14 @@ Limitations of the spike:
   there. Trigger state and out-of-workspace access are signals, not scores.
   The importer checks the trajectory's agent name, but it cannot prove the file
   is untampered. Do not use these numbers as a pass/fail gate.
-- Remote side-effect checks (`pushed`, `pr_created`) are not implemented in the
-  verifier. A case whose side-effect contract forbids remote branches or review
-  requests fails closed in Harbor mode.
+- Remote side-effect checks (`pushed`, `pr_created`, and the remote rules of a
+  side-effect contract) run on the host, not in the verifier. With
+  `--source-repo`, the host snapshots remote branch heads (`git ls-remote`) and
+  PRs (`gh pr list`) before and after the jobs. A trial gets a new branch only
+  when its name appears in the trial's commands or output; a PR counts when its
+  head branch is one of those. Concurrent trials on one repo are therefore
+  separated by branch name. Without `--source-repo`, these checks fail closed.
+  The verifier holds no GitHub token.
 - A dedicated verifier image must contain the grader package. The exporter
   writes `tests/Dockerfile` with the package copied into `/tests`.
 

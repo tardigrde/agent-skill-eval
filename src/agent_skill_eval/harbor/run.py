@@ -14,10 +14,12 @@ from typing import Optional
 
 import yaml
 
+from agent_skill_eval.git_state import github_repo_slug, repo_project_path, repo_provider
 from agent_skill_eval.harbor import require_harbor
 from agent_skill_eval.harbor.export import export_suite
 from agent_skill_eval.harbor.importer import import_job
 from agent_skill_eval.harbor.models import HarborExportManifest
+from agent_skill_eval.harbor.remote import snapshot_remote
 from agent_skill_eval.hooks import run_suite_hooks
 from agent_skill_eval.models import AgentType, BudgetConfig
 from agent_skill_eval.runner import compute_benchmark
@@ -72,6 +74,9 @@ class HarborRunOptions:
     post_run_commands: list[str] = field(default_factory=list)
     budget: Optional[BudgetConfig] = None
     pricing: dict[str, dict] = field(default_factory=dict)
+    # Remote checks (pushed, pr-created, remote side-effect rules) run on the
+    # host against this repo, before and after the Harbor jobs.
+    source_repo: Optional[str] = None
 
 
 def _slug(value: str) -> str:
@@ -210,7 +215,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
         "skill_hash": skill_hash,
         "skill_size": skill_size,
         "evals": [case.model_dump() for case in suite.evals],
-        "source_repo": None,
+        "source_repo": options.source_repo,
         "selected_eval_ids": options.eval_ids,
         "selected_side_effect_levels": options.side_effect_levels,
         "grader": {
@@ -230,7 +235,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
         "ASE_ITERATION": str(options.iteration),
         "ASE_ITERATION_DIR": str(iteration_dir),
         "ASE_WORKSPACE_BASE": str(options.workspace),
-        "ASE_SOURCE_REPO": "",
+        "ASE_SOURCE_REPO": options.source_repo or "",
         "ASE_RUN_ID": run_id,
         "ASE_EVAL_IDS": ",".join(case.case_id for case in manifest.cases),
         "ASE_SIDE_EFFECT_LEVELS": ",".join(sorted({case.side_effect_level for case in manifest.cases})),
@@ -240,6 +245,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
         # A failing pre-run hook raises HookError before Harbor starts.
         hook_records["pre_run"] = run_suite_hooks(options.pre_run_commands, hook_env, label="pre-run", fail_fast=True)
 
+    remote_pre = snapshot_remote(options.source_repo) if options.source_repo else None
     started = time.time()
     job_dirs: list[Path] = []
     expected_keys: list[str] = []
@@ -284,6 +290,9 @@ def run_harbor(options: HarborRunOptions) -> Path:
             elif completed.returncode == 0:
                 raise RuntimeError(f"Harbor did not write a result for {job_name}: {job_dir}")
 
+    remote_pair = None
+    if remote_pre is not None and options.source_repo:
+        remote_pair = (remote_pre, snapshot_remote(options.source_repo))
     results: dict[str, dict] = {}
     grader = _make_grader(options)
     for job_dir in job_dirs:
@@ -300,6 +309,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 hook_env=hook_env,
                 budget=budget,
                 pricing=options.pricing,
+                remote=remote_pair,
             )
         )
 
@@ -313,12 +323,30 @@ def run_harbor(options: HarborRunOptions) -> Path:
     with open(iteration_dir / "benchmark.json", "w", encoding="utf-8") as handle:
         json.dump(benchmark.model_dump(), handle, indent=2)
 
+    provider = repo_provider(options.source_repo) if options.source_repo else None
+    cleanup_branches = sorted(
+        {
+            branch
+            for result in results.values()
+            for branch in ((result.get("remote_changes") or {}).get("branches") or [])
+        }
+    )
+    cleanup_prs = sorted(
+        {
+            int(pr["number"])
+            for result in results.values()
+            for pr in ((result.get("remote_changes") or {}).get("prs") or [])
+            if pr.get("number") is not None and str(pr.get("state") or "OPEN").upper() in {"OPEN", "OPENED"}
+        }
+    )
     cleanup = {
-        "source_repo_provider": None,
-        "source_repo_project": None,
-        "remote_branches": [],
-        "pr_numbers": [],
-        "merge_request_numbers": [],
+        "source_repo": options.source_repo,
+        "source_repo_provider": provider,
+        "source_repo_project": repo_project_path(options.source_repo) if options.source_repo else None,
+        "source_repo_slug": github_repo_slug(options.source_repo),
+        "remote_branches": cleanup_branches,
+        "pr_numbers": [] if provider == "gitlab" else cleanup_prs,
+        "merge_request_numbers": cleanup_prs if provider == "gitlab" else [],
         "workspaces": [],
     }
     with open(iteration_dir / "cleanup.json", "w", encoding="utf-8") as handle:

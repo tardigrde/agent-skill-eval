@@ -490,9 +490,6 @@ def run(
         if AgentType.FAKE in agent_types:
             console.print("[red]The fake harness has no Harbor adapter. Choose opencode, claude-code, or codex.[/red]")
             raise typer.Exit(1)
-        if source_repo:
-            console.print("[red]--source-repo is not supported with --backend harbor.[/red]")
-            raise typer.Exit(1)
         try:
             result_dir = run_harbor(
                 HarborRunOptions(
@@ -526,6 +523,7 @@ def run(
                     post_run_commands=post_run_commands,
                     budget=budget,
                     pricing=pricing,
+                    source_repo=source_repo,
                 )
             )
         except HookError as e:

@@ -26,9 +26,17 @@ from agent_skill_eval.harbor.atif import (
     tests_pass_from_trajectory,
 )
 from agent_skill_eval.harbor.models import HarborExportManifest
+from agent_skill_eval.harbor.remote import (
+    attribute_remote_changes,
+    check_contract,
+    check_pr_created,
+    check_pushed,
+    missing_remote_result,
+    read_workspace_head,
+)
 from agent_skill_eval.harnesses import _rate
 from agent_skill_eval.hooks import apply_post_grade_hooks
-from agent_skill_eval.models import AssertionResult, BudgetConfig, GradingResult, RunMeta, TimingData
+from agent_skill_eval.models import AssertionResult, BudgetConfig, GitStateSnapshot, GradingResult, RunMeta, TimingData
 
 HARBOR_AGENT_MAP = {
     "opencode-v2": "opencode",
@@ -128,6 +136,15 @@ def _command_kind(assertion: Any) -> Optional[str]:
     return None
 
 
+def _remote_kind(assertion: Any) -> Optional[str]:
+    """Return "pushed" or "pr-created" for prose assertions graded on the host."""
+    if isinstance(assertion, str):
+        kind = classify_assertion(assertion)
+        if kind in {"pushed", "pr-created"}:
+            return kind
+    return None
+
+
 def _apply_pricing(timing: TimingData, model: str, pricing: Optional[dict[str, dict]]) -> None:
     """Fill a missing cost from --pricing-config. Harbor's own cost wins."""
     if timing.cost_usd is not None or not pricing or model not in pricing:
@@ -168,12 +185,25 @@ def _deferred_results(
     output_dir: Path,
     llm_grader: Any,
     trajectory: Optional[dict[str, Any]] = None,
+    remote_changes: Optional[dict[str, Any]] = None,
+    remote_enabled: bool = False,
 ) -> dict[int, AssertionResult]:
     indices = [int(index) for index in case.get("deferred") or []]
     assertions = case.get("assertions") or []
     results: dict[int, AssertionResult] = {}
     for index in indices:
         if not 0 <= index < len(assertions):
+            continue
+        remote_kind = _remote_kind(assertions[index])
+        if remote_kind is not None:
+            text = assertion_text(assertions[index])
+            should_trigger = bool(case.get("should_trigger", True))
+            if not remote_enabled or remote_changes is None:
+                results[index] = missing_remote_result(text)
+            elif remote_kind == "pushed":
+                results[index] = check_pushed(text, remote_changes, should_trigger, read_workspace_head(workspace))
+            else:
+                results[index] = check_pr_created(text, remote_changes, should_trigger)
             continue
         kind = _command_kind(assertions[index])
         if kind is not None:
@@ -246,6 +276,7 @@ def import_job(
     hook_env: Optional[dict[str, str]] = None,
     budget: Optional[BudgetConfig] = None,
     pricing: Optional[dict[str, dict]] = None,
+    remote: Optional[tuple[GitStateSnapshot, GitStateSnapshot]] = None,
 ) -> dict[str, dict[str, Any]]:
     """Import one Harbor job and write the native per-run artifacts."""
     results: dict[str, dict[str, Any]] = {}
@@ -338,6 +369,13 @@ def import_job(
                 method=str(entry.get("method") or "deterministic"),
                 skipped=bool(entry.get("skipped")),
             )
+        remote_changes = None
+        if remote is not None:
+            remote_changes = attribute_remote_changes(
+                remote[0],
+                remote[1],
+                "\n".join(executed_commands(trajectory)) + "\n" + agent_output,
+            )
         by_index.update(
             _deferred_results(
                 case,
@@ -346,6 +384,8 @@ def import_job(
                 output_dir=output_dir,
                 llm_grader=llm_grader,
                 trajectory=trajectory,
+                remote_changes=remote_changes,
+                remote_enabled=remote is not None,
             )
         )
 
@@ -355,6 +395,16 @@ def import_job(
             continue
 
         ordered = [by_index[index] for index in sorted(by_index)]
+        contract = case.get("side_effect_contract")
+        if contract and remote_changes is not None:
+            contract_result = check_contract(contract, remote_changes)
+            if contract_result is not None:
+                ordered.append(contract_result)
+        elif contract and remote is None:
+            if not contract.get("allow_new_remote_branches", True) or not contract.get(
+                "allow_new_review_requests", True
+            ):
+                ordered.append(missing_remote_result("The run stayed inside its remote side-effect contract"))
         grading = GradingResult(
             assertion_results=ordered,
             summary=summarize_assertion_results(ordered),
@@ -453,6 +503,7 @@ def import_job(
             "force_skill_invocation": bool(case.get("force_skill_invocation")),
             "tags": tags,
             "out_of_workspace": out_of_workspace,
+            "remote_changes": remote_changes,
         }
 
     return results
