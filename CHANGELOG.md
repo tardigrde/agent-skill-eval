@@ -6,6 +6,30 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.14.0 (2026-11-16)
+
+### Features
+
+- **harbor**: Grade pushed and pr_created on the host
+  ([`70998ad`](https://github.com/tardigrde/agent-skill-eval/commit/70998addb965fb8aaee70f4bd3d17b10ccc90abe))
+
+Harbor runs now accept --source-repo. The host snapshots remote branch heads and PRs before and
+  after the jobs, and grades pushed, pr-created and the remote part of the side-effect contract from
+  the two snapshots. The verifier still holds no GitHub token, and git never runs on downloaded
+  artifacts.
+
+- GitHub repos use gh api for branch heads; git ls-remote runs without credentials and sees nothing
+  in a private repo (found by the live proof run). - A branch counts for a trial only when its name
+  appears in that trial's commands or output; a PR counts when its head branch does. - cleanup.json
+  now lists the pushed branches and PRs.
+
+Closes #17
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+Claude-Session: https://claude.ai/code/session_01C1TAhbjVCmkTcLUkw3ACP9
+
+
 ## v0.13.0 (2026-11-16)
 
 ### Bug Fixes
