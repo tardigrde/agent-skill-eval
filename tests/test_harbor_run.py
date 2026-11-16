@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_skill_eval.harbor.models import HarborCase, HarborExportManifest
-from agent_skill_eval.harbor.run import HarborRunOptions, _arm_task_names, run_harbor
+from agent_skill_eval.harbor.run import HarborRunOptions, _arm_task_names, _job_config, run_harbor
 from agent_skill_eval.models import AgentType
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -339,3 +339,33 @@ def test_post_run_hook_is_recorded_in_the_summary(tmp_path: Path, monkeypatch):
     iteration_dir = run_harbor(_options(tmp_path, fake, post_run_commands=["echo done"]))
     summary = json.loads((iteration_dir / "summary.json").read_text())
     assert summary["hooks"]["post_run"][0]["exit_code"] == 0
+
+
+def _config_for(tmp_path: Path, api_key_name: str | None) -> dict:
+    return _job_config(
+        job_name="demo",
+        jobs_dir=tmp_path / "jobs",
+        tasks_dir=tmp_path / "tasks",
+        task_names=["case-a"],
+        agent=AgentType.OPENCODE,
+        model="opencode-go/deepseek-v4.1-flash",
+        with_skill=False,
+        skill_path=SKILL,
+        runs=1,
+        concurrency=1,
+        base_url=None,
+        api_key_name=api_key_name,
+        reasoning_effort=None,
+        timeout=None,
+        retries=None,
+    )
+
+
+def test_job_config_passes_api_key_name_to_agent_entry(tmp_path):
+    config = _config_for(tmp_path, "OPENCODE_API_KEY")
+    assert config["agents"][0]["model_api_key_name"] == "OPENCODE_API_KEY"
+
+
+def test_job_config_omits_api_key_name_by_default(tmp_path):
+    config = _config_for(tmp_path, None)
+    assert "model_api_key_name" not in config["agents"][0]
