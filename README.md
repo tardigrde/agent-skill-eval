@@ -652,6 +652,38 @@ provider hook passed, cleanup verification passed, and the command/model/harness
 version are recorded. A stronger claim adds repeated runs, natural trigger and
 negative-control cases, and a before/after comparison with `compare`.
 
+### 7. Live GitHub cases on the Harbor backend (not supported yet)
+
+Today, run `live-safe` and `live-external` cases with the native runner
+(`--backend native`). It uses your own `gh` or `glab` login. It is not isolated.
+
+The Harbor backend is not ready for these cases:
+
+- The remote checks `pushed` and `pr_created` are not implemented in the
+  Harbor verifier. A case whose contract forbids remote branches or review
+  requests fails closed.
+- `--source-repo` is rejected with `--backend harbor`.
+
+The exporter already prepares the container for a later live run. For live
+cases only, it allows the hosts `github.com` and `api.github.com` and passes the
+host variable `GH_TOKEN` into the container as `GH_TOKEN` and `GITHUB_TOKEN`.
+`--harbor-api-key-name` sets the model key only. It does not set `GH_TOKEN`.
+
+When the host-side remote checks exist, use this token setup:
+
+1. Create a **fine-grained personal access token** for one scratch repository
+   only, for example `skill-evals-test`.
+2. Give it only **Contents: Read and write** and **Pull requests: Read and
+   write**.
+3. Set the expiry to **1 day**.
+4. Put it in `.env` as `GH_TOKEN=<token>`. The name must be `GH_TOKEN`. Do not
+   commit `.env`.
+5. Run only the live cases, on purpose, with `--side-effect-level live-safe`.
+6. After the run, delete the token in GitHub. Close the test PRs and branches.
+
+The agent can use this token. Treat any run with a live token as not isolated
+from GitHub.
+
 ## Example skills
 
 Five example skills ship with the repo, chosen to exercise different grading surfaces:

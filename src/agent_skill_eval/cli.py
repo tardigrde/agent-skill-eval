@@ -289,6 +289,11 @@ def run(
     harbor_workdir: str = typer.Option("/app", "--harbor-workdir", help="Working directory in Harbor tasks"),
     harbor_task_version: str = typer.Option("1.0", "--harbor-task-version", help="Version written to task.toml"),
     harbor_jobs_dir: Optional[Path] = typer.Option(None, "--harbor-jobs-dir", help="Directory for Harbor job results"),
+    harbor_api_key_name: Optional[str] = typer.Option(
+        None,
+        "--harbor-api-key-name",
+        help="Name of the host environment variable that holds the agent's inference API key (Harbor backend)",
+    ),
     harbor_bin: Optional[str] = typer.Option(
         None, "--harbor-bin", help="Harbor CLI executable (default: find 'harbor' on PATH)"
     ),
@@ -513,6 +518,7 @@ def run(
                     jobs_dir=harbor_jobs_dir,
                     reasoning_effort=reasoning_effort,
                     agent_base_url=harness_base_url,
+                    agent_api_key_name=harbor_api_key_name,
                     agent_timeout=agent_timeout,
                     agent_retries=agent_retries,
                     pre_run_commands=pre_run_commands,

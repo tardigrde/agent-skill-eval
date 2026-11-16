@@ -64,6 +64,7 @@ class HarborRunOptions:
     jobs_dir: Optional[Path] = None
     reasoning_effort: Optional[str] = None
     agent_base_url: Optional[str] = None
+    agent_api_key_name: Optional[str] = None
     agent_timeout: Optional[int] = None
     agent_retries: Optional[int] = None
     pre_run_commands: list[str] = field(default_factory=list)
@@ -118,6 +119,7 @@ def _job_config(
     runs: int,
     concurrency: int,
     base_url: Optional[str],
+    api_key_name: Optional[str] = None,
     reasoning_effort: Optional[str],
     timeout: Optional[int],
     retries: Optional[int],
@@ -127,6 +129,8 @@ def _job_config(
         agent_entry["model_name"] = model
     if base_url:
         agent_entry["base_url"] = base_url
+    if api_key_name:
+        agent_entry["model_api_key_name"] = api_key_name
     if timeout:
         agent_entry["override_timeout_sec"] = float(timeout)
     if reasoning_effort:
@@ -262,6 +266,7 @@ def run_harbor(options: HarborRunOptions) -> Path:
                 runs=options.runs,
                 concurrency=options.concurrency,
                 base_url=options.agent_base_url,
+                api_key_name=options.agent_api_key_name,
                 reasoning_effort=options.reasoning_effort,
                 timeout=options.agent_timeout,
                 retries=options.agent_retries,
