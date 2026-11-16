@@ -216,10 +216,8 @@ def _side_effect_contract(
     elif not contract.get("allow_new_local_branches", True) or not contract.get("allow_new_commits", True):
         problems.append("git history is unavailable; branch/commit contract cannot be verified")
 
-    if not contract.get("allow_new_remote_branches", True):
-        problems.append("remote branch checks are unavailable in the verifier")
-    if not contract.get("allow_new_review_requests", True):
-        problems.append("review-request checks are unavailable in the verifier")
+    # Remote branch and review-request rules are graded on the host after the
+    # job (harbor/remote.py). The verifier holds no GitHub token.
 
     return _result(
         "The run stayed inside its side-effect contract",

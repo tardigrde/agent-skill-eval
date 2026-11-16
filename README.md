@@ -349,7 +349,7 @@ agent-skill-eval run \
 
 Key options:
 
-- `--backend`: `native` (host workspace, not isolated) or `harbor` (Docker, isolated). Harbor rejects `--source-repo`. Budget checks, `--pricing-config`, and lifecycle hooks work on Harbor, but they run on the host after Harbor finishes. Post-grade hooks see the downloaded artifacts, not the container, and a `stop-suite` budget action only fails the run (it cannot stop trials that already ran).
+- `--backend`: `native` (host workspace, not isolated) or `harbor` (Docker, isolated). On Harbor, `--source-repo` is not cloned into the container. It only names the repo that the host checks for pushes and PRs. Budget checks, `--pricing-config`, and lifecycle hooks work on Harbor, but they run on the host after Harbor finishes. Post-grade hooks see the downloaded artifacts, not the container, and a `stop-suite` budget action only fails the run (it cannot stop trials that already ran).
 - `--agent-model, -m`: model per agent as `agent=model`; a bare value applies to all agents. Repeatable. With Harbor, use the provider-prefixed form (`openrouter/deepseek/deepseek-v4.1-flash`).
 - `--write-baseline` / `--compare`: write a baseline JSON after the run, or compare the run to an earlier baseline. The comparison includes per-config pass-rate, pass^k, token, cost, and time deltas, plus a per-case bootstrap interval, and is written to `comparison.json` and `comparison.md`.
 - `--reasoning-effort`: reasoning setting passed to agents that support it (codex: `model_reasoning_effort`, e.g. `minimal`/`low`/`medium`/`high`/`xhigh`). Without it, agents silently inherit their own local config (e.g. `~/.codex/config.toml`) — two machines can then benchmark different reasoning settings under the same command line. Agents without a pass-through flag print a warning and record `null`. The effective value lands in `run_meta.json`.
@@ -652,24 +652,24 @@ provider hook passed, cleanup verification passed, and the command/model/harness
 version are recorded. A stronger claim adds repeated runs, natural trigger and
 negative-control cases, and a before/after comparison with `compare`.
 
-### 7. Live GitHub cases on the Harbor backend (not supported yet)
+### 7. Live GitHub cases on the Harbor backend
 
-Today, run `live-safe` and `live-external` cases with the native runner
-(`--backend native`). It uses your own `gh` or `glab` login. It is not isolated.
+Pass `--source-repo <repo>` with `--backend harbor`. The container does not clone
+it. The option names the repo that the host checks for pushes and PRs. The
+remote checks `pushed` and `pr_created` run on the host, not in the container.
+A branch counts for a trial only when its name appears in the trial's commands
+or output. Without `--source-repo`, these checks, and any contract that forbids
+remote branches or review requests, fail.
 
-The Harbor backend is not ready for these cases:
-
-- The remote checks `pushed` and `pr_created` are not implemented in the
-  Harbor verifier. A case whose contract forbids remote branches or review
-  requests fails closed.
-- `--source-repo` is rejected with `--backend harbor`.
+The base image must provide `git` and `gh` for skills that push and open PRs.
+Set it with `--harbor-base-image`.
 
 The exporter already prepares the container for a later live run. For live
 cases only, it allows the hosts `github.com` and `api.github.com` and passes the
 host variable `GH_TOKEN` into the container as `GH_TOKEN` and `GITHUB_TOKEN`.
 `--harbor-api-key-name` sets the model key only. It does not set `GH_TOKEN`.
 
-When the host-side remote checks exist, use this token setup:
+Use this token setup:
 
 1. Create a **fine-grained personal access token** for one scratch repository
    only, for example `skill-evals-test`.

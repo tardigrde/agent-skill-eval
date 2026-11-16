@@ -148,6 +148,44 @@ def _project_path_from_repo_path(path: str) -> Optional[str]:
     return "/".join(parts)
 
 
+def list_review_requests(source_repo: Optional[str]) -> list[dict]:
+    """List PRs/MRs (all states) known on the source repo. Empty on any failure."""
+    open_prs: list[dict] = []
+    if not source_repo:
+        return open_prs
+    provider = repo_provider(source_repo)
+    slug = github_repo_slug(source_repo)
+    if slug and provider in (None, "github"):
+        prs_raw = _run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                slug,
+                "--state",
+                "all",
+                "--json",
+                "number,headRefName,baseRefName,url,state",
+            ],
+            Path.cwd(),
+        )
+        if prs_raw.strip():
+            try:
+                open_prs = json.loads(prs_raw)
+            except json.JSONDecodeError:
+                open_prs = []
+    elif provider == "gitlab":
+        project = repo_project_path(source_repo)
+        if project:
+            mrs_raw = _run(
+                ["glab", "mr", "list", "-R", project, "--all", "--output", "json"],
+                Path.cwd(),
+            )
+            open_prs = _normalize_gitlab_merge_requests(mrs_raw)
+    return open_prs
+
+
 def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> GitStateSnapshot:
     """Snapshot the git and review-request state of a workspace.
 
@@ -204,38 +242,7 @@ def capture_git_state(workspace: Path, source_repo: Optional[str] = None) -> Git
     status_lines = [line for line in _run(["git", "status", "--porcelain"], workspace).splitlines() if line.strip()]
     changed_files = sorted({line[3:].strip() for line in status_lines if len(line) >= 4 and line[3:].strip()})
 
-    open_prs: list[dict] = []
-    if source_repo:
-        provider = repo_provider(source_repo)
-        slug = github_repo_slug(source_repo)
-        if slug and provider in (None, "github"):
-            prs_raw = _run(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--repo",
-                    slug,
-                    "--state",
-                    "all",
-                    "--json",
-                    "number,headRefName,baseRefName,url,state",
-                ],
-                Path.cwd(),
-            )
-            if prs_raw.strip():
-                try:
-                    open_prs = json.loads(prs_raw)
-                except json.JSONDecodeError:
-                    open_prs = []
-        elif provider == "gitlab":
-            project = repo_project_path(source_repo)
-            if project:
-                mrs_raw = _run(
-                    ["glab", "mr", "list", "-R", project, "--all", "--output", "json"],
-                    Path.cwd(),
-                )
-                open_prs = _normalize_gitlab_merge_requests(mrs_raw)
+    open_prs = list_review_requests(source_repo)
 
     return GitStateSnapshot(
         local_branches=sorted(local_branches),
