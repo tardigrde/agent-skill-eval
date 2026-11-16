@@ -1150,6 +1150,11 @@ class DeterministicGrader:
         )
 
 
+# Cap the judge's reply. Without a cap some providers reserve the model's full output
+# window (for example 131072 tokens) and reject the call when credit is low.
+JUDGE_MAX_OUTPUT_TOKENS = 8192
+
+
 class LLMGrader:
     def __init__(
         self,
@@ -1340,6 +1345,7 @@ blocks."""
             ],
             response_format={"type": "json_object"},
             temperature=0,
+            max_tokens=JUDGE_MAX_OUTPUT_TOKENS,
         )
         data = json.loads(response.choices[0].message.content)
         if not isinstance(data, dict):

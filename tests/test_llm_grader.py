@@ -167,6 +167,24 @@ class TestLLMGraderGrade:
         assert "agent said hello" in prompt
         assert "1. assertion 1" in prompt
 
+    def test_judge_call_caps_output_tokens(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
+
+        output_dir = tmp_path / "with_skill" / "test"
+        output_dir.mkdir(parents=True)
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content=json.dumps({"results": []})))]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = mock_response
+
+        grader = LLMGrader()
+        grader._client = mock_client
+        grader.grade(assertions=["assertion 1"], agent_output="out", output_dir=output_dir, expected_output="exp")
+
+        kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert kwargs["max_tokens"] == 8192
+
     def test_empty_assertions_returns_empty(self, tmp_path):
         grader = LLMGrader()
         results = grader.grade(assertions=[], agent_output="out", output_dir=tmp_path, expected_output="exp")
