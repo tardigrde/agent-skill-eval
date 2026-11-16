@@ -6,6 +6,41 @@ from conventional commits; entries below it are curated by hand.
 
 <!-- version list -->
 
+## v0.13.0 (2026-11-16)
+
+### Bug Fixes
+
+- **graders**: Cap the LLM judge output tokens
+  ([`00a1e3e`](https://github.com/tardigrde/agent-skill-eval/commit/00a1e3e5539d0f15f7601df6c54505b2abb21d69))
+
+Some providers reserve the full output window of the judge model (131072 tokens) and reject the call
+  with a 402 when credit is low. Cap the reply at 8192 tokens so grading works with a small balance.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+### Documentation
+
+- Document live GitHub cases on the Harbor backend
+  ([`c4563ea`](https://github.com/tardigrde/agent-skill-eval/commit/c4563eaa5264b9b75faef9af9b8bcd3e53dacef2))
+
+Explain that remote checks are not implemented in Harbor mode yet, what the exporter already
+  prepares (allowed hosts and GH_TOKEN), and the fine-grained token setup to use once host-side
+  remote checks exist.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+### Features
+
+- **harbor**: Add --harbor-api-key-name to pass the host key by name
+  ([`278a243`](https://github.com/tardigrde/agent-skill-eval/commit/278a243dc5505b11e7a652e671956a9ce483a17e))
+
+Harbor containers cannot use the host login. The new option names a host environment variable that
+  holds the agent's inference API key. Harbor reads it by name, so the value is never printed or
+  stored in the job config.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
+
 ## v0.12.0 (2026-11-15)
 
 ### Features
